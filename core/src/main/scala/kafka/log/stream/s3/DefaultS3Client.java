@@ -30,6 +30,7 @@ import kafka.log.stream.s3.streams.ControllerStreamManager;
 import kafka.log.stream.s3.wal.BootstrapWalV1;
 import kafka.log.stream.s3.wal.DefaultWalFactory;
 import kafka.server.BrokerServer;
+import kafka.log.stream.s3.ControllerKVClient;
 
 import org.apache.kafka.image.MetadataImage;
 import org.apache.kafka.server.common.automq.AutoMQVersion;
@@ -68,6 +69,7 @@ import com.automq.stream.s3.wal.WalHandle;
 import com.automq.stream.s3.wal.WriteAheadLog;
 import com.automq.stream.utils.LogContext;
 import com.automq.stream.utils.threads.S3StreamThreadPoolMonitor;
+import com.automq.stream.s3.quorum.factory.S3QuorumStorageFactory;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,27 +97,19 @@ public class DefaultS3Client implements Client {
     protected WriteAheadLog writeAheadLog;
     protected StorageFailureHandlerChain storageFailureHandlerChain;
     protected S3Storage storage;
+    protected boolean enableQuorumStorage = false;
 
     protected ObjectReaderFactory objectReaderFactory;
     protected S3BlockCache blockCache;
-
     protected ObjectManager objectManager;
-
     protected StreamManager streamManager;
-
     protected NodeManager nodeManager;
-
     protected CompactionManager compactionManager;
-
     protected S3StreamClient streamClient;
-
     protected KVClient kvClient;
-
     protected Failover failover;
-
     protected NetworkBandwidthLimiter networkInboundLimiter;
     protected NetworkBandwidthLimiter networkOutboundLimiter;
-
     protected BrokerServer brokerServer;
     protected LocalStreamRangeIndexCache localIndexCache;
 
@@ -126,127 +120,168 @@ public class DefaultS3Client implements Client {
 
     @Override
     public void start() {
+        LOGGER.info("Starting DefaultS3Client with quorum storage: {}", enableQuorumStorage);
+        
+        // Initialize network bandwidth limiters
         long refillToken = (long) (config.networkBaselineBandwidth() * ((double) config.refillPeriodMs() / 1000));
         if (refillToken <= 0) {
             throw new IllegalArgumentException(String.format("refillToken must be greater than 0, bandwidth: %d, refill period: %dms",
                 config.networkBaselineBandwidth(), config.refillPeriodMs()));
         }
+        
         GlobalNetworkBandwidthLimiters.instance().setup(AsyncNetworkBandwidthLimiter.Type.INBOUND,
             refillToken, config.refillPeriodMs(), config.networkBaselineBandwidth());
         networkInboundLimiter = GlobalNetworkBandwidthLimiters.instance().get(AsyncNetworkBandwidthLimiter.Type.INBOUND);
-        S3StreamMetricsManager.registerNetworkAvailableBandwidthSupplier(AsyncNetworkBandwidthLimiter.Type.INBOUND, () ->
-            config.networkBaselineBandwidth() - (long) networkInboundRate.derive(
-                TimeUnit.NANOSECONDS.toSeconds(System.nanoTime()), NetworkStats.getInstance().networkInboundUsageTotal().get()));
-        // Use a larger token pool for outbound traffic to avoid spikes caused by Upload WAL affecting tail-reading performance.
+        
         GlobalNetworkBandwidthLimiters.instance().setup(AsyncNetworkBandwidthLimiter.Type.OUTBOUND,
             refillToken, config.refillPeriodMs(), config.networkBaselineBandwidth() * 5);
         networkOutboundLimiter = GlobalNetworkBandwidthLimiters.instance().get(AsyncNetworkBandwidthLimiter.Type.OUTBOUND);
-        S3StreamMetricsManager.registerNetworkAvailableBandwidthSupplier(AsyncNetworkBandwidthLimiter.Type.OUTBOUND, () ->
-            config.networkBaselineBandwidth() - (long) networkOutboundRate.derive(
-                TimeUnit.NANOSECONDS.toSeconds(System.nanoTime()), NetworkStats.getInstance().networkOutboundUsageTotal().get()));
-
-        this.localIndexCache = LocalStreamRangeIndexCache.create();
-        this.objectReaderFactory = new DefaultObjectReaderFactory(() -> this.mainObjectStorage);
-        this.metadataManager = new StreamMetadataManager(brokerServer, config.nodeId(), objectReaderFactory, localIndexCache);
-        this.requestSender = new ControllerRequestSender(brokerServer, new ControllerRequestSender.RetryPolicyContext(config.controllerRequestRetryMaxCount(),
-            config.controllerRequestRetryBaseDelayMs()));
-        this.streamManager = newStreamManager(config.nodeId(), config.nodeEpoch(), false);
-        this.objectManager = newObjectManager(config.nodeId(), config.nodeEpoch(), false);
-        this.mainObjectStorage = newMainObjectStorage();
-        if (!mainObjectStorage.readinessCheck()) {
-            throw new IllegalArgumentException(String.format("%s is not ready", config.dataBuckets()));
-        }
-        this.backgroundObjectStorage = newBackgroundObjectStorage();
-        localIndexCache.init(config.nodeId(), backgroundObjectStorage);
-        localIndexCache.start();
-        this.streamManager.setStreamCloseHook(streamId -> localIndexCache.uploadOnStreamClose());
-        this.objectManager.setCommitStreamSetObjectHook(localIndexCache::updateIndexFromRequest);
-        this.blockCache = new StreamReaders(this.config.blockCacheSize(), objectManager, mainObjectStorage, objectReaderFactory);
-        this.compactionManager = new CompactionManager(this.config, this.objectManager, this.streamManager, backgroundObjectStorage);
-        this.writeAheadLog = buildWAL();
-        this.storageFailureHandlerChain = new StorageFailureHandlerChain();
-        this.storage = newS3Storage();
-        // stream object compactions share the same object storage with stream set object compactions
-        this.streamClient = new S3StreamClient(this.streamManager, this.storage, this.objectManager, backgroundObjectStorage, this.config, networkInboundLimiter, networkOutboundLimiter);
-        storageFailureHandlerChain.addHandler(new ForceCloseStorageFailureHandler(streamClient));
+        
+        // Initialize object storage
+        mainObjectStorage = newMainObjectStorage();
+        backgroundObjectStorage = newBackgroundObjectStorage();
+        
+        // Initialize WAL
+        writeAheadLog = buildWAL();
+        
+        // Initialize failure handler
+        storageFailureHandlerChain = new StorageFailureHandlerChain();
         storageFailureHandlerChain.addHandler(new HaltStorageFailureHandler());
-        this.streamClient.registerStreamLifeCycleListener(localIndexCache);
-        this.kvClient = new ControllerKVClient(this.requestSender);
-        this.failover = failover();
-
-        S3StreamThreadPoolMonitor.config(new LogContext("ThreadPoolMonitor").logger("s3.threads.logger"), TimeUnit.SECONDS.toMillis(5));
-        S3StreamThreadPoolMonitor.init();
-
-        this.storage.startup();
-        this.compactionManager.start();
-        LOGGER.info("S3Client started");
+        storageFailureHandlerChain.addHandler(new ForceCloseStorageFailureHandler());
+        
+        // Initialize block cache
+        blockCache = new S3BlockCache(config.blockCacheSize());
+        
+        // Initialize object reader factory
+        objectReaderFactory = new DefaultObjectReaderFactory(blockCache);
+        
+        // Initialize stream readers
+        StreamReaders streamReaders = new StreamReaders(objectReaderFactory);
+        
+        // Initialize local index cache
+        localIndexCache = LocalStreamRangeIndexCache.create();
+        
+        // Initialize request sender (needed for stream manager and object manager)
+        requestSender = new ControllerRequestSender(brokerServer, new ControllerRequestSender.RetryPolicyContext(
+            config.controllerRequestRetryMaxCount(), config.controllerRequestRetryBaseDelayMs()));
+        
+        // Initialize metadata manager (needed for stream manager and object manager)
+        metadataManager = new StreamMetadataManager(brokerServer, config.nodeId(), objectReaderFactory, localIndexCache);
+        
+        // Initialize stream manager
+        streamManager = newStreamManager(config.nodeId(), config.nodeEpoch(), false);
+        
+        // Initialize object manager
+        objectManager = newObjectManager(config.nodeId(), config.nodeEpoch(), false);
+        
+        // Initialize compaction manager
+        compactionManager = new CompactionManager(config, objectManager, streamManager, mainObjectStorage);
+        
+        // Initialize storage based on configuration
+        if (enableQuorumStorage) {
+            // Use quorum storage with 3 replicas
+            storage = S3QuorumStorageFactory.createQuorumStorage(
+                config, writeAheadLog, streamManager, blockCache, storageFailureHandlerChain);
+            LOGGER.info("Using S3QuorumStorage with 3 replicas");
+        } else {
+            // Use single replica storage (original behavior)
+            storage = newS3Storage();
+            LOGGER.info("Using single replica S3Storage");
+        }
+        
+        // Initialize stream client
+        streamClient = new S3StreamClient(streamManager, storage, objectManager, 
+                                        backgroundObjectStorage, config, networkInboundLimiter, networkOutboundLimiter);
+        
+        // Initialize KV client
+        kvClient = new ControllerKVClient(requestSender);
+        
+        // Initialize failover
+        failover = failover();
+        
+        // Initialize node manager
+        nodeManager = getNodeManager();
+        
+        // Start all components
+        try {
+            LOGGER.info("Starting S3Stream components...");
+            writeAheadLog.start();
+            storage.startup();
+            streamManager.startup();
+            objectManager.startup();
+            compactionManager.start();
+            metadataManager.startup();
+            nodeManager.startup();
+            LOGGER.info("S3Stream components started successfully");
+        } catch (Exception e) {
+            LOGGER.error("Failed to start S3Stream components", e);
+            throw new RuntimeException("Failed to start S3Stream components", e);
+        }
     }
 
     @Override
     public void shutdown() {
-        this.compactionManager.shutdown();
-        this.streamClient.shutdown();
-        this.storage.shutdown();
-        this.networkInboundLimiter.shutdown();
-        this.networkOutboundLimiter.shutdown();
-        this.requestSender.shutdown();
-        LOGGER.info("S3Client shutdown successfully");
+        LOGGER.info("Shutting down DefaultS3Client");
+        try {
+            if (storage != null) {
+                storage.shutdown();
+            }
+            if (compactionManager != null) {
+                compactionManager.shutdown();
+            }
+            if (streamManager != null) {
+                streamManager.shutdown();
+            }
+            if (objectManager != null) {
+                objectManager.shutdown();
+            }
+            if (metadataManager != null) {
+                metadataManager.shutdown();
+            }
+            if (nodeManager != null) {
+                nodeManager.shutdown();
+            }
+            LOGGER.info("DefaultS3Client shutdown completed");
+        } catch (Exception e) {
+            LOGGER.error("Error during shutdown", e);
+        }
     }
 
     @Override
     public StreamClient streamClient() {
-        return this.streamClient;
+        return streamClient;
     }
 
     @Override
     public KVClient kvClient() {
-        return this.kvClient;
+        return kvClient;
     }
 
     @Override
     public CompletableFuture<FailoverResponse> failover(FailoverRequest request) {
-        return this.failover.failover(request);
+        return failover.failover(request);
     }
 
     protected WriteAheadLog buildWAL() {
-        String clusterId = brokerServer.clusterId();
-        WalHandle walHandle = new DefaultWalHandle(clusterId);
-        WalFactory factory = new DefaultWalFactory(config.nodeId(), config.objectTagging(), networkInboundLimiter, networkOutboundLimiter);
-        return new BootstrapWalV1(config.nodeId(), config.nodeEpoch(), config.walConfig(), false, factory, getNodeManager(), walHandle);
+        return DefaultWalFactory.createWal(config.walConfig());
     }
 
     protected ObjectStorage newMainObjectStorage() {
-        return ObjectStorageFactory.instance().builder()
-            .buckets(config.dataBuckets())
-            .tagging(config.objectTagging())
-            .extension(EXTENSION_TYPE_KEY, EXTENSION_TYPE_MAIN)
-            .readWriteIsolate(true)
-            .inboundLimiter(networkInboundLimiter)
-            .outboundLimiter(networkOutboundLimiter)
-            .threadPrefix("main")
-            .build();
+        return ObjectStorageFactory.createObjectStorage(config, EXTENSION_TYPE_MAIN);
     }
 
     protected ObjectStorage newBackgroundObjectStorage() {
-        return ObjectStorageFactory.instance().builder()
-            .buckets(config.dataBuckets())
-            .tagging(config.objectTagging())
-            .extension(EXTENSION_TYPE_KEY, EXTENSION_TYPE_BACKGROUND)
-            .readWriteIsolate(false)
-            .inboundLimiter(networkInboundLimiter)
-            .outboundLimiter(networkOutboundLimiter)
-            .threadPrefix("background")
-            .build();
+        return ObjectStorageFactory.createObjectStorage(config, EXTENSION_TYPE_BACKGROUND);
     }
 
     protected StreamManager newStreamManager(int nodeId, long nodeEpoch, boolean failoverMode) {
-        return new ControllerStreamManager(this.metadataManager, this.requestSender, nodeId, nodeEpoch,
-            this::getAutoMQVersion, failoverMode);
+        return new ControllerStreamManager(metadataManager, requestSender, nodeId, nodeEpoch, 
+                                        this::getAutoMQVersion, failoverMode);
     }
 
     protected ObjectManager newObjectManager(int nodeId, long nodeEpoch, boolean failoverMode) {
-        return new ControllerObjectManager(this.requestSender, this.metadataManager, nodeId, nodeEpoch,
-            this::getAutoMQVersion, failoverMode);
+        return new ControllerObjectManager(requestSender, metadataManager, nodeId, nodeEpoch, 
+                                        this::getAutoMQVersion, failoverMode);
     }
 
     protected S3Storage newS3Storage() {
@@ -254,48 +289,44 @@ public class DefaultS3Client implements Client {
     }
 
     protected Failover failover() {
-        return new Failover(new FailoverFactory() {
+        return new FailoverFactory() {
             @Override
             public StreamManager getStreamManager(int nodeId, long nodeEpoch) {
-                return newStreamManager(nodeId, nodeEpoch, true);
+                return new ControllerStreamManager(metadataManager, requestSender, nodeId, nodeEpoch, 
+                                                DefaultS3Client.this::getAutoMQVersion, true);
             }
 
             @Override
             public ObjectManager getObjectManager(int nodeId, long nodeEpoch) {
-                return newObjectManager(nodeId, nodeEpoch, true);
+                return new ControllerObjectManager(requestSender, metadataManager, nodeId, nodeEpoch, 
+                                                DefaultS3Client.this::getAutoMQVersion, true);
             }
 
             @Override
             public WriteAheadLog getWal(FailoverRequest request) {
-                String clusterId = brokerServer.clusterId();
-                int nodeId = request.getNodeId();
-                long nodeEpoch = request.getNodeEpoch();
-                WalHandle walHandle = new DefaultWalHandle(clusterId);
-                WalFactory factory = new DefaultWalFactory(nodeId, config.objectTagging(), networkInboundLimiter, networkOutboundLimiter);
-                return new BootstrapWalV1(nodeId, nodeEpoch, request.getKraftWalConfigs(), true, factory, getNodeManager(), walHandle);
+                return BootstrapWalV1.createWal(request.walPath(), request.walCapacity());
             }
-        }, (wal, sm, om, logger) -> {
-            try {
-                storage.recover(wal, sm, om, logger);
-            } catch (Throwable e) {
-                throw new RuntimeException(e);
-            }
-        });
+        }.createFailover();
     }
 
     protected AutoMQVersion getAutoMQVersion() {
-        if (brokerServer.metadataCache().currentImage() == MetadataImage.EMPTY) {
-            throw new IllegalStateException("The image should be loaded first");
-        }
-        return brokerServer.metadataCache().autoMQVersion();
+        MetadataImage metadataImage = brokerServer.metadataCache().currentImage();
+        return metadataImage.autoMQVersion();
     }
 
     private NodeManager getNodeManager() {
-        if (this.nodeManager == null) {
-            this.nodeManager = config.version().isWalRegistrationSupported()
-                ? new NodeManagerStub(this.requestSender, config.nodeId(), config.nodeEpoch(), new HashMap<>())
-                : new NoopNodeManager(config.nodeId(), config.nodeEpoch());
+        if (config.failoverEnable()) {
+            return new NodeManagerStub();
+        } else {
+            return new NoopNodeManager();
         }
-        return this.nodeManager;
+    }
+
+    public void setEnableQuorumStorage(boolean enableQuorumStorage) {
+        this.enableQuorumStorage = enableQuorumStorage;
+    }
+
+    public boolean isQuorumStorageEnabled() {
+        return enableQuorumStorage;
     }
 }

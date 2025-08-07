@@ -123,8 +123,7 @@ public class S3QuorumStorage implements Storage {
         }
         
         // Wait for majority to complete
-        return FutureUtil.waitForMajority(futures, config.getWriteQuorumSize())
-            .thenApply(v -> null);
+        return FutureUtil.waitForMajorityVoid(futures, config.getWriteQuorumSize());
     }
 
     private CompletableFuture<Void> executeQuorumWrite(QuorumWriteRequest request) {
@@ -147,7 +146,7 @@ public class S3QuorumStorage implements Storage {
         }
         
         // Wait for write quorum (majority)
-        return FutureUtil.waitForMajority(writeFutures, config.getWriteQuorumSize())
+        return FutureUtil.waitForMajorityVoid(writeFutures, config.getWriteQuorumSize())
             .thenApply(v -> {
                 LOGGER.debug("Quorum write completed with sequence {}", request.sequence);
                 return null;

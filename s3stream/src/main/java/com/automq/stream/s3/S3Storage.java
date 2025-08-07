@@ -650,6 +650,7 @@ public class S3Storage implements Storage {
             cf.thenAccept(readDataBlock -> {
                 releaseRecords(readDataBlock.getRecords());
             });
+            return null; // Return null for void operations
         });
     }
 
@@ -818,7 +819,14 @@ public class S3Storage implements Storage {
             });
         }
 
-        backgroundExecutor.execute(() -> FutureUtil.exec(() -> uploadDeltaWAL0(context), cf, LOGGER, "uploadDeltaWAL"));
+        backgroundExecutor.execute(() -> {
+            try {
+                uploadDeltaWAL0(context);
+            } catch (Exception e) {
+                LOGGER.error("Error executing uploadDeltaWAL", e);
+                cf.completeExceptionally(e);
+            }
+        });
         cf.whenComplete((nil, ex) -> {
             StorageOperationStats.getInstance().uploadWALCompleteStats.record(context.timer.elapsedAs(TimeUnit.NANOSECONDS));
             pendingUploadBytes.addAndGet(-size);

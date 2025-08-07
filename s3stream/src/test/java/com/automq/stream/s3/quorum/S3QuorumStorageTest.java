@@ -39,10 +39,22 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import io.netty.buffer.Unpooled;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class S3QuorumStorageTest {
@@ -68,6 +80,10 @@ class S3QuorumStorageTest {
             .replicaId(0)
             .region("us-east-1")
             .bucket("test-bucket-1")
+            .endpoint("https://s3.us-east-1.amazonaws.com")
+            .accessKey("test-access-key")
+            .secretKey("test-secret-key")
+            .s3Config(new com.automq.stream.s3.Config())
             .role(ReplicaConfig.ReplicaRole.PRIMARY)
             .priority(100)
             .build());
@@ -75,6 +91,10 @@ class S3QuorumStorageTest {
             .replicaId(1)
             .region("us-west-2")
             .bucket("test-bucket-2")
+            .endpoint("https://s3.us-west-2.amazonaws.com")
+            .accessKey("test-access-key")
+            .secretKey("test-secret-key")
+            .s3Config(new com.automq.stream.s3.Config())
             .role(ReplicaConfig.ReplicaRole.SECONDARY)
             .priority(50)
             .build());
@@ -82,6 +102,10 @@ class S3QuorumStorageTest {
             .replicaId(2)
             .region("eu-west-1")
             .bucket("test-bucket-3")
+            .endpoint("https://s3.eu-west-1.amazonaws.com")
+            .accessKey("test-access-key")
+            .secretKey("test-secret-key")
+            .s3Config(new com.automq.stream.s3.Config())
             .role(ReplicaConfig.ReplicaRole.SECONDARY)
             .priority(25)
             .build());
@@ -141,7 +165,10 @@ class S3QuorumStorageTest {
     }
 
     @Test
-    void testSuccessfulQuorumWrite() throws ExecutionException, InterruptedException {
+    void testSuccessfulQuorumWrite() throws ExecutionException, InterruptedException, TimeoutException {
+        // Start the quorum storage
+        quorumStorage.startup();
+        
         // Setup mocks for successful write
         when(mockStorage1.append(any(AppendContext.class), any(StreamRecordBatch.class)))
             .thenReturn(CompletableFuture.completedFuture(null));
@@ -151,7 +178,7 @@ class S3QuorumStorageTest {
             .thenReturn(CompletableFuture.completedFuture(null));
 
         // Create test data
-        StreamRecordBatch recordBatch = new StreamRecordBatch(1L, 1L, 0L, 1, null);
+        StreamRecordBatch recordBatch = new StreamRecordBatch(1L, 1L, 0L, 1, Unpooled.wrappedBuffer("test".getBytes()));
         AppendContext context = AppendContext.DEFAULT;
 
         // Execute
@@ -162,10 +189,16 @@ class S3QuorumStorageTest {
         verify(mockStorage1).append(context, recordBatch);
         verify(mockStorage2).append(context, recordBatch);
         verify(mockStorage3).append(context, recordBatch);
+        
+        // Shutdown the quorum storage
+        quorumStorage.shutdown();
     }
 
     @Test
-    void testQuorumWriteWithOneFailure() throws ExecutionException, InterruptedException {
+    void testQuorumWriteWithOneFailure() throws ExecutionException, InterruptedException, TimeoutException {
+        // Start the quorum storage
+        quorumStorage.startup();
+        
         // Setup mocks - one failure, two successes
         when(mockStorage1.append(any(AppendContext.class), any(StreamRecordBatch.class)))
             .thenReturn(CompletableFuture.completedFuture(null));
@@ -175,7 +208,7 @@ class S3QuorumStorageTest {
             .thenReturn(CompletableFuture.completedFuture(null));
 
         // Create test data
-        StreamRecordBatch recordBatch = new StreamRecordBatch(1L, 1L, 0L, 1, null);
+        StreamRecordBatch recordBatch = new StreamRecordBatch(1L, 1L, 0L, 1, Unpooled.wrappedBuffer("test".getBytes()));
         AppendContext context = AppendContext.DEFAULT;
 
         // Execute - should succeed with 2/3 quorum
@@ -186,10 +219,16 @@ class S3QuorumStorageTest {
         verify(mockStorage1).append(context, recordBatch);
         verify(mockStorage2).append(context, recordBatch);
         verify(mockStorage3).append(context, recordBatch);
+        
+        // Shutdown the quorum storage
+        quorumStorage.shutdown();
     }
 
     @Test
     void testQuorumWriteWithTwoFailures() {
+        // Start the quorum storage
+        quorumStorage.startup();
+        
         // Setup mocks - two failures, one success
         when(mockStorage1.append(any(AppendContext.class), any(StreamRecordBatch.class)))
             .thenReturn(CompletableFuture.completedFuture(null));
@@ -199,17 +238,29 @@ class S3QuorumStorageTest {
             .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Storage failure")));
 
         // Create test data
-        StreamRecordBatch recordBatch = new StreamRecordBatch(1L, 1L, 0L, 1, null);
+        StreamRecordBatch recordBatch = new StreamRecordBatch(1L, 1L, 0L, 1, Unpooled.wrappedBuffer("test".getBytes()));
         AppendContext context = AppendContext.DEFAULT;
 
-        // Execute - should fail as we need 2/3 quorum
+        // Execute - should fail with only 1/3 quorum
         CompletableFuture<Void> future = quorumStorage.append(context, recordBatch);
         
+        // Verify that the future fails
         assertThrows(ExecutionException.class, () -> future.get(5, TimeUnit.SECONDS));
+        
+        // Verify all replicas were attempted
+        verify(mockStorage1).append(context, recordBatch);
+        verify(mockStorage2).append(context, recordBatch);
+        verify(mockStorage3).append(context, recordBatch);
+        
+        // Shutdown the quorum storage
+        quorumStorage.shutdown();
     }
 
     @Test
-    void testSuccessfulQuorumRead() throws ExecutionException, InterruptedException {
+    void testSuccessfulQuorumRead() throws ExecutionException, InterruptedException, TimeoutException {
+        // Start the quorum storage
+        quorumStorage.startup();
+        
         // Setup mocks for successful read
         ReadDataBlock mockDataBlock = mock(ReadDataBlock.class);
         when(mockStorage1.read(any(FetchContext.class), eq(1L), eq(0L), eq(100L), eq(1024)))
@@ -223,10 +274,16 @@ class S3QuorumStorageTest {
         // Verify
         assertNotNull(result);
         verify(mockStorage1).read(context, 1L, 0L, 100L, 1024);
+        
+        // Shutdown the quorum storage
+        quorumStorage.shutdown();
     }
 
     @Test
-    void testQuorumReadWithPrimaryFailure() throws ExecutionException, InterruptedException {
+    void testQuorumReadWithPrimaryFailure() throws ExecutionException, InterruptedException, TimeoutException {
+        // Start the quorum storage
+        quorumStorage.startup();
+        
         // Setup mocks - primary fails, secondary succeeds
         ReadDataBlock mockDataBlock = mock(ReadDataBlock.class);
         when(mockStorage1.read(any(FetchContext.class), eq(1L), eq(0L), eq(100L), eq(1024)))
@@ -237,12 +294,17 @@ class S3QuorumStorageTest {
         // Execute
         FetchContext context = FetchContext.DEFAULT;
         CompletableFuture<ReadDataBlock> future = quorumStorage.read(context, 1L, 0L, 100L, 1024);
+        
+        // Wait for result with timeout
         ReadDataBlock result = future.get(5, TimeUnit.SECONDS);
 
         // Verify
         assertNotNull(result);
         verify(mockStorage1).read(context, 1L, 0L, 100L, 1024);
         verify(mockStorage2).read(context, 1L, 0L, 100L, 1024);
+        
+        // Shutdown the quorum storage
+        quorumStorage.shutdown();
     }
 
     @Test
@@ -272,10 +334,16 @@ class S3QuorumStorageTest {
         quorumState.markReplicaFailed(1);
         assertEquals(1, quorumState.getHealthyReplicaCount());
         assertFalse(quorumState.hasQuorum());
+        
+        // Shutdown the quorum storage
+        quorumStorage.shutdown();
     }
 
     @Test
-    void testForceUpload() throws ExecutionException, InterruptedException {
+    void testForceUpload() throws ExecutionException, InterruptedException, TimeoutException {
+        // Start the quorum storage
+        quorumStorage.startup();
+        
         // Setup mocks
         when(mockStorage1.forceUpload(1L)).thenReturn(CompletableFuture.completedFuture(null));
         when(mockStorage2.forceUpload(1L)).thenReturn(CompletableFuture.completedFuture(null));
@@ -289,16 +357,20 @@ class S3QuorumStorageTest {
         verify(mockStorage1).forceUpload(1L);
         verify(mockStorage2).forceUpload(1L);
         verify(mockStorage3).forceUpload(1L);
+        
+        // Shutdown the quorum storage
+        quorumStorage.shutdown();
     }
 
     @Test
     void testInvalidQuorumSize() {
-        // Test with invalid replica count
+        // Test with invalid replica count - quorum size 3 but only 2 replicas
         List<Storage> invalidReplicas = new ArrayList<>();
         invalidReplicas.add(mockStorage1);
         invalidReplicas.add(mockStorage2);
         // Missing third replica
 
+        // Should throw IllegalArgumentException when replica count doesn't match quorum size
         assertThrows(IllegalArgumentException.class, () -> {
             new S3QuorumStorage(quorumConfig, invalidReplicas);
         });

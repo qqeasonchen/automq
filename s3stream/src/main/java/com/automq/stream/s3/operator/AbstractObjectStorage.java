@@ -266,6 +266,7 @@ public abstract class AbstractObjectStorage implements ObjectStorage {
             // The return CompletableFuture will be completed with TimeoutException,
             // so we need to release the ByteBuf if the read complete later.
             cf.thenAccept(ReferenceCounted::release);
+            return null; // Return null for void operations
         });
     }
 

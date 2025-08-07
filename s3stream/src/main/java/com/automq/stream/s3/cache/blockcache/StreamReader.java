@@ -57,7 +57,7 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 import static com.automq.stream.s3.cache.CacheAccessType.BLOCK_CACHE_HIT;
 import static com.automq.stream.s3.cache.CacheAccessType.BLOCK_CACHE_MISS;
-import static com.automq.stream.utils.FutureUtil.exec;
+
 
 @EventLoopSafe public class StreamReader {
     public static final int GET_OBJECT_STEP = 4;
@@ -130,27 +130,32 @@ import static com.automq.stream.utils.FutureUtil.exec;
         ReadContext readContext = new ReadContext();
         read0(readContext, startOffset, endOffset, maxBytes);
         CompletableFuture<ReadDataBlock> retCf = new CompletableFuture<>();
-        readContext.cf.whenComplete((rst, ex) -> exec(() -> {
-            Throwable cause = FutureUtil.cause(ex);
-            if (cause != null) {
-                readContext.records.forEach(StreamRecordBatch::release);
-                for (Block block : readContext.blocks) {
-                    block.release();
-                }
-                if (leftRetries > 0 && isRecoverable(cause)) {
-                    // The cached blocks maybe invalid after object compaction, so we need to reset the blocks and retry read
-                    resetBlocks();
-                    // use async to prevent recursive call cause stack overflow
-                    eventLoop.execute(() -> FutureUtil.propagate(read(startOffset, endOffset, maxBytes, leftRetries - 1), retCf));
+        readContext.cf.whenComplete((rst, ex) -> {
+            try {
+                Throwable cause = FutureUtil.cause(ex);
+                if (cause != null) {
+                    readContext.records.forEach(StreamRecordBatch::release);
+                    for (Block block : readContext.blocks) {
+                        block.release();
+                    }
+                    if (leftRetries > 0 && isRecoverable(cause)) {
+                        // The cached blocks maybe invalid after object compaction, so we need to reset the blocks and retry read
+                        resetBlocks();
+                        // use async to prevent recursive call cause stack overflow
+                        eventLoop.execute(() -> FutureUtil.propagate(read(startOffset, endOffset, maxBytes, leftRetries - 1), retCf));
+                    } else {
+                        retCf.completeExceptionally(cause);
+                    }
                 } else {
-                    retCf.completeExceptionally(cause);
+                    afterRead(rst, readContext);
+                    StorageOperationStats.getInstance().blockCacheReadStreamThroughput.add(MetricsLevel.INFO, rst.sizeInBytes());
+                    retCf.complete(rst);
                 }
-            } else {
-                afterRead(rst, readContext);
-                StorageOperationStats.getInstance().blockCacheReadStreamThroughput.add(MetricsLevel.INFO, rst.sizeInBytes());
-                retCf.complete(rst);
+            } catch (Exception e) {
+                LOGGER.error("Error executing read", e);
+                retCf.completeExceptionally(e);
             }
-        }, retCf, LOGGER, "read"));
+        });
         return retCf;
     }
 

@@ -24,11 +24,16 @@ import kafka.log.stream.s3.DefaultS3Client;
 import kafka.log.streamaspect.ClientWrapper;
 import kafka.log.streamaspect.client.ClientFactoryProxy;
 import kafka.log.streamaspect.client.Context;
+import com.automq.stream.s3.quorum.config.QuorumConfigLoader;
 
 import com.automq.stream.api.Client;
 import com.automq.stream.s3.Config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class ClientFactory {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ClientFactory.class);
 
     /**
      * This method will be called by {@link ClientFactoryProxy}
@@ -37,6 +42,7 @@ public class ClientFactory {
         Config config = ConfigUtils.to(context.config);
         config.nodeEpoch(System.currentTimeMillis());
         config.version(() -> context.brokerServer.metadataCache().autoMQVersion().s3streamVersion());
+        
         boolean zeroZoneChannelsEnabled = context.config.automq().zoneRouterChannels().isPresent();
         if (zeroZoneChannelsEnabled && config.walUploadIntervalMs() == -1) {
             config.walUploadIntervalMs(1000);
@@ -47,6 +53,20 @@ public class ClientFactory {
         }
 
         DefaultS3Client client = new DefaultS3Client(context.brokerServer, config);
+        
+        // Check if quorum storage is enabled in configuration
+        try {
+            String configPath = context.config.automq().s3().configPath().orElse(null);
+            if (configPath != null && QuorumConfigLoader.isQuorumEnabled(configPath)) {
+                client.setEnableQuorumStorage(true);
+                LOGGER.info("Quorum storage enabled from configuration: {}", configPath);
+            } else {
+                LOGGER.info("Using single replica S3 storage");
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Failed to check quorum configuration, using single replica storage", e);
+        }
+        
         return new ClientWrapper(client);
     }
 }

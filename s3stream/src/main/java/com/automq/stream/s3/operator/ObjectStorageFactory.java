@@ -19,6 +19,7 @@
 
 package com.automq.stream.s3.operator;
 
+import com.automq.stream.s3.Config;
 import com.automq.stream.s3.network.NetworkBandwidthLimiter;
 
 import org.apache.commons.lang3.StringUtils;
@@ -85,6 +86,32 @@ public class ObjectStorageFactory {
             }
         }
         return instance;
+    }
+
+    /**
+     * Create ObjectStorage with specified extension type
+     */
+    public static ObjectStorage createObjectStorage(Config config, String extensionType) {
+        return instance().builder()
+            .extension(EXTENSION_TYPE_KEY, extensionType)
+            .build();
+    }
+
+    /**
+     * Create ObjectStorage with custom parameters
+     */
+    public static ObjectStorage createObjectStorage(Config config, String endpoint, 
+                                                  String accessKey, String secretKey, String region) {
+        // Create a bucket URI for the given region
+        String bucketUriStr = String.format("0@s3://%s/automq-bucket?endpoint=%s&region=%s", 
+                                          region, endpoint, region);
+        BucketURI bucket = BucketURI.parse(bucketUriStr);
+        
+        return instance().builder()
+            .bucket(bucket)
+            .extension("accessKey", accessKey)
+            .extension("secretKey", secretKey)
+            .build();
     }
 
     public class Builder {
