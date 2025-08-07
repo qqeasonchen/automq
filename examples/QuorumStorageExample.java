@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.ByteBuffer;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import io.netty.buffer.Unpooled;
 
 /**
  * Example demonstrating how to use S3QuorumStorage for high-availability data storage
@@ -91,6 +92,8 @@ public class QuorumStorageExample {
         baseConfig.networkBaselineBandwidth(100 * 1024 * 1024); // 100MB/s
 
         // Create quorum storage using factory
+        // Note: In a real implementation, you would need to provide actual WAL, StreamManager, etc.
+        // For this example, we'll use null values which will be handled by the factory
         return S3QuorumStorageFactory.createQuorumStorage(
             baseConfig, null, null, null, null);
     }
@@ -111,7 +114,7 @@ public class QuorumStorageExample {
                 1L, // epoch
                 0L, // baseOffset
                 1,  // count
-                data
+                Unpooled.wrappedBuffer(data)
             );
 
             AppendContext context = AppendContext.DEFAULT;

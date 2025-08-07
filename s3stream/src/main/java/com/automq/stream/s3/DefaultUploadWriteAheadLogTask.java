@@ -27,7 +27,6 @@ import com.automq.stream.s3.objects.ObjectStreamRange;
 import com.automq.stream.s3.objects.StreamObject;
 import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.utils.AsyncRateLimiter;
-import com.automq.stream.utils.FutureUtil;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -125,7 +124,14 @@ public class DefaultUploadWriteAheadLogTask implements UploadWriteAheadLogTask {
 
     @Override
     public CompletableFuture<CommitStreamSetObjectRequest> upload() {
-        prepareCf.thenAcceptAsync(objectId -> FutureUtil.exec(() -> upload0(objectId), uploadCf, LOGGER, "upload"), executor);
+        prepareCf.thenAcceptAsync(objectId -> {
+            try {
+                upload0(objectId);
+            } catch (Exception e) {
+                LOGGER.error("Error executing upload", e);
+                uploadCf.completeExceptionally(e);
+            }
+        }, executor);
         return uploadCf;
     }
 

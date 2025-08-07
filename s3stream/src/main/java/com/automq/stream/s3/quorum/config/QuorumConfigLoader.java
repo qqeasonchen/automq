@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
 /**
@@ -103,7 +104,7 @@ public class QuorumConfigLoader {
             throw new IllegalStateException("AWS credentials not found in environment variables");
         }
 
-        ReplicaConfig.ReplicaRole role = ReplicaConfig.ReplicaRole.valueOf(roleStr.toUpperCase());
+        ReplicaConfig.ReplicaRole role = ReplicaConfig.ReplicaRole.valueOf(roleStr.toUpperCase(Locale.ROOT));
         
         // Create S3 config for this replica
         Config replicaS3Config = createReplicaS3Config(baseConfig, region);
@@ -155,7 +156,6 @@ public class QuorumConfigLoader {
         replicaConfig.objectRetentionTimeInSecond(baseConfig.objectRetentionTimeInSecond());
         replicaConfig.failoverEnable(baseConfig.failoverEnable());
         replicaConfig.snapshotReadEnable(baseConfig.snapshotReadEnable());
-        replicaConfig.version(baseConfig.version());
         
         // Set region-specific configuration
         replicaConfig.walConfig("0@file:///tmp/s3stream_wal_" + region);
