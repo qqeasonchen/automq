@@ -66,7 +66,7 @@ public class QuorumConfigLoader {
         for (int i = 0; i < quorumSize; i++) {
             ReplicaConfig replicaConfig = loadReplicaConfig(props, i, baseConfig);
             replicaConfigs.add(replicaConfig);
-            LOGGER.info("Loaded replica {} configuration: region={}, bucket={}, role={}", 
+            LOGGER.info("Loaded replica {} configuration: region={}, bucket={}, role={}",
                        i, replicaConfig.getRegion(), replicaConfig.getBucket(), replicaConfig.getRole());
         }
 
@@ -87,27 +87,27 @@ public class QuorumConfigLoader {
      */
     private static ReplicaConfig loadReplicaConfig(Properties props, int replicaIndex, Config baseConfig) {
         String prefix = "automq.s3.quorum.replica." + replicaIndex + ".";
-        
+
         int replicaId = Integer.parseInt(props.getProperty(prefix + "id", String.valueOf(replicaIndex)));
         String region = props.getProperty(prefix + "region");
         String bucket = props.getProperty(prefix + "bucket");
         String endpoint = props.getProperty(prefix + "endpoint");
         String roleStr = props.getProperty(prefix + "role", "SECONDARY");
         long priority = Long.parseLong(props.getProperty(prefix + "priority", "0"));
-        
+
         // Get AWS credentials from environment variables
         String accessKey = System.getenv("AWS_ACCESS_KEY_ID");
         String secretKey = System.getenv("AWS_SECRET_ACCESS_KEY");
-        
+
         if (accessKey == null || secretKey == null) {
             throw new IllegalStateException("AWS credentials not found in environment variables");
         }
 
         ReplicaConfig.ReplicaRole role = ReplicaConfig.ReplicaRole.valueOf(roleStr.toUpperCase());
-        
+
         // Create S3 config for this replica
         Config replicaS3Config = createReplicaS3Config(baseConfig, region);
-        
+
         return ReplicaConfig.builder()
             .replicaId(replicaId)
             .region(region)
@@ -126,7 +126,7 @@ public class QuorumConfigLoader {
      */
     private static Config createReplicaS3Config(Config baseConfig, String region) {
         Config replicaConfig = new Config();
-        
+
         // Copy base configuration
         replicaConfig.nodeId(baseConfig.nodeId());
         replicaConfig.walCacheSize(baseConfig.walCacheSize());
@@ -155,11 +155,11 @@ public class QuorumConfigLoader {
         replicaConfig.objectRetentionTimeInSecond(baseConfig.objectRetentionTimeInSecond());
         replicaConfig.failoverEnable(baseConfig.failoverEnable());
         replicaConfig.snapshotReadEnable(baseConfig.snapshotReadEnable());
-        replicaConfig.version(baseConfig.version());
-        
+        replicaConfig.version(()->baseConfig.version());
+
         // Set region-specific configuration
         replicaConfig.walConfig("0@file:///tmp/s3stream_wal_" + region);
-        
+
         return replicaConfig;
     }
 
@@ -178,4 +178,4 @@ public class QuorumConfigLoader {
             return false;
         }
     }
-} 
+}

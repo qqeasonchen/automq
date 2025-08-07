@@ -54,10 +54,10 @@ public class S3QuorumStorageFactory {
             StreamManager streamManager,
             S3BlockCache blockCache,
             StorageFailureHandler storageFailureHandler) {
-        
+
         // Create replica configurations for 3 regions
         List<ReplicaConfig> replicaConfigs = createDefaultReplicaConfigs(baseConfig);
-        
+
         // Create quorum configuration
         QuorumConfig quorumConfig = QuorumConfig.builder()
             .quorumSize(3)
@@ -69,17 +69,17 @@ public class S3QuorumStorageFactory {
             .enableReadRepair(true)
             .readRepairTimeoutMs(5000)
             .build();
-        
+
         // Create individual S3Storage instances for each replica
         List<Storage> replicas = new ArrayList<>();
         for (int i = 0; i < replicaConfigs.size(); i++) {
             ReplicaConfig replicaConfig = replicaConfigs.get(i);
-            Storage replica = createReplicaStorage(replicaConfig, writeAheadLog, streamManager, 
+            Storage replica = createReplicaStorage(replicaConfig, writeAheadLog, streamManager,
                                                  blockCache, storageFailureHandler);
             replicas.add(replica);
             LOGGER.info("Created replica {} storage for region: {}", i, replicaConfig.getRegion());
         }
-        
+
         return new S3QuorumStorage(quorumConfig, replicas);
     }
 
@@ -88,7 +88,7 @@ public class S3QuorumStorageFactory {
      */
     private static List<ReplicaConfig> createDefaultReplicaConfigs(Config baseConfig) {
         List<ReplicaConfig> configs = new ArrayList<>();
-        
+
         // Primary replica (us-east-1)
         ReplicaConfig primaryConfig = ReplicaConfig.builder()
             .replicaId(0)
@@ -102,7 +102,7 @@ public class S3QuorumStorageFactory {
             .priority(100)
             .build();
         configs.add(primaryConfig);
-        
+
         // Secondary replica 1 (us-west-2)
         ReplicaConfig secondary1Config = ReplicaConfig.builder()
             .replicaId(1)
@@ -116,7 +116,7 @@ public class S3QuorumStorageFactory {
             .priority(50)
             .build();
         configs.add(secondary1Config);
-        
+
         // Secondary replica 2 (eu-west-1)
         ReplicaConfig secondary2Config = ReplicaConfig.builder()
             .replicaId(2)
@@ -130,7 +130,7 @@ public class S3QuorumStorageFactory {
             .priority(25)
             .build();
         configs.add(secondary2Config);
-        
+
         return configs;
     }
 
@@ -139,7 +139,7 @@ public class S3QuorumStorageFactory {
      */
     private static Config createReplicaS3Config(Config baseConfig, String region) {
         Config replicaConfig = new Config();
-        
+
         // Copy base configuration
         replicaConfig.nodeId(baseConfig.nodeId());
         replicaConfig.walCacheSize(baseConfig.walCacheSize());
@@ -168,11 +168,11 @@ public class S3QuorumStorageFactory {
         replicaConfig.objectRetentionTimeInSecond(baseConfig.objectRetentionTimeInSecond());
         replicaConfig.failoverEnable(baseConfig.failoverEnable());
         replicaConfig.snapshotReadEnable(baseConfig.snapshotReadEnable());
-        replicaConfig.version(baseConfig.version());
-        
+        replicaConfig.version(()->baseConfig.version());
+
         // Set region-specific configuration
         replicaConfig.walConfig("0@file:///tmp/s3stream_wal_" + region);
-        
+
         return replicaConfig;
     }
 
@@ -185,7 +185,7 @@ public class S3QuorumStorageFactory {
             StreamManager streamManager,
             S3BlockCache blockCache,
             StorageFailureHandler storageFailureHandler) {
-        
+
         try {
             // Create ObjectStorage for this replica
             ObjectStorage objectStorage = ObjectStorageFactory.createObjectStorage(
@@ -195,11 +195,11 @@ public class S3QuorumStorageFactory {
                 replicaConfig.getSecretKey(),
                 replicaConfig.getRegion()
             );
-            
+
             // Create ObjectManager for this replica
             ObjectManager objectManager = createReplicaObjectManager(
                 replicaConfig, streamManager, objectStorage);
-            
+
             // Create S3Storage for this replica
             return new S3Storage(
                 replicaConfig.getS3Config(),
@@ -210,31 +210,31 @@ public class S3QuorumStorageFactory {
                 objectStorage,
                 storageFailureHandler
             );
-            
+
         } catch (Exception e) {
-            LOGGER.error("Failed to create replica storage for region: {}", 
+            LOGGER.error("Failed to create replica storage for region: {}",
                         replicaConfig.getRegion(), e);
             throw new RuntimeException("Failed to create replica storage", e);
         }
     }
 
-    /**
-     * Create ObjectManager for a specific replica
-     */
-    private static ObjectManager createReplicaObjectManager(
-            ReplicaConfig replicaConfig,
-            StreamManager streamManager,
-            ObjectStorage objectStorage) {
-        
-        // This would typically create a replica-specific ObjectManager
-        // For now, we'll use the same ObjectManager but with replica-specific configuration
-        // In a real implementation, you might want separate ObjectManagers per replica
-        
-        return new com.automq.stream.s3.objects.ControllerObjectManager(
-            replicaConfig.getS3Config().nodeId(),
-            replicaConfig.getS3Config().nodeEpoch(),
-            streamManager,
-            objectStorage
-        );
-    }
-} 
+        /**
+         * Create ObjectManager for a specific replica
+         */
+        private static ObjectManager createReplicaObjectManager(
+                ReplicaConfig replicaConfig,
+                StreamManager streamManager,
+                ObjectStorage objectStorage) {
+
+            // This would typically create a replica-specific ObjectManager
+            // For now, we'll use the same ObjectManager but with replica-specific configuration
+            // In a real implementation, you might want separate ObjectManagers per replica
+
+            return new kafka.log.stream.s3.objects.ControllerObjectManager(
+                replicaConfig.getS3Config().nodeId(),
+                replicaConfig.getS3Config().nodeEpoch(),
+                streamManager,
+                objectStorage
+            );
+        }
+}
