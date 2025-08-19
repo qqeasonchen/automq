@@ -52,6 +52,7 @@ public class StreamReaders implements S3BlockCache {
 
     private final ObjectManager objectManager;
     private final ObjectStorage objectStorage;
+    private volatile boolean cleanupSchedulerInitialized = false;
 
     public StreamReaders(long size, ObjectManager objectManager, ObjectStorage objectStorage,
         ObjectReaderFactory objectReaderFactory) {
@@ -79,16 +80,26 @@ public class StreamReaders implements S3BlockCache {
         this.objectReaderFactory = objectReaderFactory;
         this.objectManager = objectManager;
         this.objectStorage = objectStorage;
+    }
 
-        Threads.COMMON_SCHEDULER.scheduleAtFixedRate(this::triggerExpiredStreamReaderCleanup,
-            STREAM_READER_EXPIRED_CHECK_INTERVAL_MILLS,
-            STREAM_READER_EXPIRED_CHECK_INTERVAL_MILLS,
-            TimeUnit.MILLISECONDS);
+    private void ensureCleanupSchedulerInitialized() {
+        if (!cleanupSchedulerInitialized) {
+            synchronized (this) {
+                if (!cleanupSchedulerInitialized) {
+                    Threads.COMMON_SCHEDULER.scheduleAtFixedRate(this::triggerExpiredStreamReaderCleanup,
+                        STREAM_READER_EXPIRED_CHECK_INTERVAL_MILLS,
+                        STREAM_READER_EXPIRED_CHECK_INTERVAL_MILLS,
+                        TimeUnit.MILLISECONDS);
+                    cleanupSchedulerInitialized = true;
+                }
+            }
+        }
     }
 
     @Override
     public CompletableFuture<ReadDataBlock> read(TraceContext context, long streamId, long startOffset, long endOffset,
         int maxBytes) {
+        ensureCleanupSchedulerInitialized();
         Cache cache = caches[Math.abs((int) (streamId % caches.length))];
         return cache.read(streamId, startOffset, endOffset, maxBytes);
     }
