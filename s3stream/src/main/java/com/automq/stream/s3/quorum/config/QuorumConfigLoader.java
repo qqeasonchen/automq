@@ -96,12 +96,20 @@ public class QuorumConfigLoader {
         String roleStr = props.getProperty(prefix + "role", "SECONDARY");
         long priority = Long.parseLong(props.getProperty(prefix + "priority", "0"));
         
-        // Get AWS credentials from environment variables
+        // Get AWS credentials from environment variables or system properties (for testing)
         String accessKey = System.getenv("AWS_ACCESS_KEY_ID");
         String secretKey = System.getenv("AWS_SECRET_ACCESS_KEY");
         
+        // Fallback to system properties for testing
+        if (accessKey == null) {
+            accessKey = System.getProperty("AWS_ACCESS_KEY_ID");
+        }
+        if (secretKey == null) {
+            secretKey = System.getProperty("AWS_SECRET_ACCESS_KEY");
+        }
+        
         if (accessKey == null || secretKey == null) {
-            throw new IllegalStateException("AWS credentials not found in environment variables");
+            throw new IllegalStateException("AWS credentials not found in environment variables or system properties");
         }
 
         ReplicaConfig.ReplicaRole role = ReplicaConfig.ReplicaRole.valueOf(roleStr.toUpperCase(Locale.ROOT));
