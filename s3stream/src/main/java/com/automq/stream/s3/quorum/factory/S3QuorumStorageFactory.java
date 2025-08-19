@@ -64,10 +64,10 @@ public class S3QuorumStorageFactory {
             StreamManager streamManager,
             S3BlockCache blockCache,
             StorageFailureHandler storageFailureHandler) {
-        
+
         // Create replica configurations for 3 regions
         List<ReplicaConfig> replicaConfigs = createDefaultReplicaConfigs(baseConfig);
-        
+
         // Create quorum configuration
         QuorumConfig quorumConfig = QuorumConfig.builder()
             .quorumSize(3)
@@ -79,17 +79,17 @@ public class S3QuorumStorageFactory {
             .enableReadRepair(true)
             .readRepairTimeoutMs(5000)
             .build();
-        
+
         // Create individual S3Storage instances for each replica
         List<Storage> replicas = new ArrayList<>();
         for (int i = 0; i < replicaConfigs.size(); i++) {
             ReplicaConfig replicaConfig = replicaConfigs.get(i);
-            Storage replica = createReplicaStorage(replicaConfig, writeAheadLog, streamManager, 
+            Storage replica = createReplicaStorage(replicaConfig, writeAheadLog, streamManager,
                                                  blockCache, storageFailureHandler);
             replicas.add(replica);
             LOGGER.info("Created replica {} storage for region: {}", i, replicaConfig.getRegion());
         }
-        
+
         return new S3QuorumStorage(quorumConfig, replicas);
     }
 
@@ -98,13 +98,13 @@ public class S3QuorumStorageFactory {
      */
     private static List<ReplicaConfig> createDefaultReplicaConfigs(Config baseConfig) {
         List<ReplicaConfig> configs = new ArrayList<>();
-        
+
         // Primary replica (us-east-1)
         ReplicaConfig primaryConfig = ReplicaConfig.builder()
             .replicaId(0)
             .region("us-east-1")
-            .bucket("automq-primary-bucket")
-            .endpoint("https://s3.us-east-1.amazonaws.com")
+            .bucket("automq-data")
+            .endpoint("https://10.65.172.124:9004")
             .accessKey(System.getenv("AWS_ACCESS_KEY_ID"))
             .secretKey(System.getenv("AWS_SECRET_ACCESS_KEY"))
             .s3Config(createReplicaS3Config(baseConfig, "us-east-1"))
@@ -112,13 +112,13 @@ public class S3QuorumStorageFactory {
             .priority(100)
             .build();
         configs.add(primaryConfig);
-        
+
         // Secondary replica 1 (us-west-2)
         ReplicaConfig secondary1Config = ReplicaConfig.builder()
             .replicaId(1)
             .region("us-west-2")
-            .bucket("automq-secondary1-bucket")
-            .endpoint("https://s3.us-west-2.amazonaws.com")
+            .bucket("automq-data")
+            .endpoint("https://10.65.172.124:9002")
             .accessKey(System.getenv("AWS_ACCESS_KEY_ID"))
             .secretKey(System.getenv("AWS_SECRET_ACCESS_KEY"))
             .s3Config(createReplicaS3Config(baseConfig, "us-west-2"))
@@ -126,13 +126,13 @@ public class S3QuorumStorageFactory {
             .priority(50)
             .build();
         configs.add(secondary1Config);
-        
+
         // Secondary replica 2 (eu-west-1)
         ReplicaConfig secondary2Config = ReplicaConfig.builder()
             .replicaId(2)
             .region("eu-west-1")
-            .bucket("automq-secondary2-bucket")
-            .endpoint("https://s3.eu-west-1.amazonaws.com")
+            .bucket("automq-data")
+            .endpoint("https://10.65.172.124:9000")
             .accessKey(System.getenv("AWS_ACCESS_KEY_ID"))
             .secretKey(System.getenv("AWS_SECRET_ACCESS_KEY"))
             .s3Config(createReplicaS3Config(baseConfig, "eu-west-1"))
@@ -140,7 +140,7 @@ public class S3QuorumStorageFactory {
             .priority(25)
             .build();
         configs.add(secondary2Config);
-        
+
         return configs;
     }
 
@@ -149,7 +149,7 @@ public class S3QuorumStorageFactory {
      */
     private static Config createReplicaS3Config(Config baseConfig, String region) {
         Config replicaConfig = new Config();
-        
+
         // Copy base configuration
         replicaConfig.nodeId(baseConfig.nodeId());
         replicaConfig.walCacheSize(baseConfig.walCacheSize());
@@ -178,10 +178,10 @@ public class S3QuorumStorageFactory {
         replicaConfig.objectRetentionTimeInSecond(baseConfig.objectRetentionTimeInSecond());
         replicaConfig.failoverEnable(baseConfig.failoverEnable());
         replicaConfig.snapshotReadEnable(baseConfig.snapshotReadEnable());
-        
+
         // Set region-specific configuration
         replicaConfig.walConfig("0@file:///tmp/s3stream_wal_" + region);
-        
+
         return replicaConfig;
     }
 
@@ -194,7 +194,7 @@ public class S3QuorumStorageFactory {
             StreamManager streamManager,
             S3BlockCache blockCache,
             StorageFailureHandler storageFailureHandler) {
-        
+
         try {
             // Create ObjectStorage for this replica using the factory
             ObjectStorage objectStorage = ObjectStorageFactory.createObjectStorage(
@@ -204,11 +204,11 @@ public class S3QuorumStorageFactory {
                 replicaConfig.getSecretKey(),
                 replicaConfig.getRegion()
             );
-            
+
             // Create ObjectManager for this replica
             ObjectManager objectManager = createReplicaObjectManager(
                 replicaConfig, streamManager, objectStorage);
-            
+
             // Create S3Storage for this replica with correct constructor parameters
             // Note: In a real implementation, you would need to provide actual WAL, etc.
             // For this example, we'll create a mock or simplified version
@@ -245,7 +245,7 @@ public class S3QuorumStorageFactory {
                     }
                 };
             }
-            
+
             return new S3Storage(
                 replicaConfig.getS3Config(),
                 writeAheadLog,
@@ -255,9 +255,9 @@ public class S3QuorumStorageFactory {
                 objectStorage,
                 storageFailureHandler
             );
-            
+
         } catch (Exception e) {
-            LOGGER.error("Failed to create replica storage for region: {}", 
+            LOGGER.error("Failed to create replica storage for region: {}",
                         replicaConfig.getRegion(), e);
             throw new RuntimeException("Failed to create replica storage", e);
         }
@@ -270,11 +270,11 @@ public class S3QuorumStorageFactory {
             ReplicaConfig replicaConfig,
             StreamManager streamManager,
             ObjectStorage objectStorage) {
-        
+
         // For quorum storage, we need to create a simpler ObjectManager
         // that doesn't depend on ControllerRequestSender and StreamMetadataManager
         // We'll use a basic implementation that works with the replica's ObjectStorage
-        
+
         return new com.automq.stream.s3.objects.ObjectManager() {
             @Override
             public CompletableFuture<Long> prepareObject(int count, long ttl) {
@@ -335,4 +335,4 @@ public class S3QuorumStorageFactory {
             }
         };
     }
-} 
+}
