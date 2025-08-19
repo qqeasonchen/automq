@@ -94,15 +94,23 @@ public class S3QuorumStorage implements Storage {
         // Create quorum write request
         QuorumWriteRequest request = new QuorumWriteRequest(sequence, context, streamRecord);
         
-        // Execute quorum write
-        return executeQuorumWrite(request);
+        // Execute quorum write with timeout
+        return FutureUtil.withTimeout(
+            executeQuorumWrite(request),
+            config.getWriteTimeoutMs(),
+            java.util.concurrent.TimeUnit.MILLISECONDS
+        );
     }
 
     @Override
     public CompletableFuture<ReadDataBlock> read(FetchContext context, long streamId, long startOffset, long endOffset, int maxBytes) {
         // For read, we can read from any replica that has the data
         // Prefer primary replica first, then fallback to others
-        return executeQuorumRead(context, streamId, startOffset, endOffset, maxBytes);
+        return FutureUtil.withTimeout(
+            executeQuorumRead(context, streamId, startOffset, endOffset, maxBytes),
+            config.getReadTimeoutMs(),
+            java.util.concurrent.TimeUnit.MILLISECONDS
+        );
     }
 
     @Override
@@ -128,10 +136,17 @@ public class S3QuorumStorage implements Storage {
 
     private CompletableFuture<Void> executeQuorumWrite(QuorumWriteRequest request) {
         List<CompletableFuture<Void>> writeFutures = new ArrayList<>();
+        int healthyReplicaCount = 0;
         
-        // Submit write to all replicas
+        // Submit write to all replicas, but prefer healthy ones
         for (int i = 0; i < replicas.size(); i++) {
             final int replicaIndex = i;
+            boolean isHealthy = quorumState.isReplicaHealthy(replicaIndex);
+            
+            if (isHealthy) {
+                healthyReplicaCount++;
+            }
+            
             CompletableFuture<Void> future = replicas.get(i).append(request.context, request.streamRecord)
                 .whenComplete((result, ex) -> {
                     if (ex != null) {
@@ -143,6 +158,12 @@ public class S3QuorumStorage implements Storage {
                     }
                 });
             writeFutures.add(future);
+        }
+        
+        // Check if we have enough healthy replicas to potentially succeed
+        if (healthyReplicaCount < config.getWriteQuorumSize()) {
+            LOGGER.warn("Insufficient healthy replicas: {} < required {}", 
+                healthyReplicaCount, config.getWriteQuorumSize());
         }
         
         // Wait for write quorum (majority)
@@ -157,21 +178,58 @@ public class S3QuorumStorage implements Storage {
         // Try primary replica first
         CompletableFuture<ReadDataBlock> primaryFuture = replicas.get(0).read(context, streamId, startOffset, endOffset, maxBytes);
         
-        return primaryFuture.exceptionally(ex -> {
-            LOGGER.warn("Primary replica read failed, trying secondary replicas", ex);
-            
-            // If primary fails, try secondary replicas
-            List<CompletableFuture<ReadDataBlock>> secondaryFutures = new ArrayList<>();
-            for (int i = 1; i < replicas.size(); i++) {
-                secondaryFutures.add(replicas.get(i).read(context, streamId, startOffset, endOffset, maxBytes));
+        return primaryFuture.handle((result, ex) -> {
+            if (ex == null) {
+                quorumState.markReplicaSuccess(0);
+                return CompletableFuture.completedFuture(result);
+            } else {
+                LOGGER.warn("Primary replica read failed, trying secondary replicas", ex);
+                quorumState.markReplicaFailed(0);
+                
+                // If primary fails, try secondary replicas
+                List<CompletableFuture<ReadDataBlock>> secondaryFutures = new ArrayList<>();
+                for (int i = 1; i < replicas.size(); i++) {
+                    final int replicaIndex = i;
+                    CompletableFuture<ReadDataBlock> secondaryFuture = replicas.get(i).read(context, streamId, startOffset, endOffset, maxBytes)
+                        .whenComplete((value, throwable) -> {
+                            if (throwable != null) {
+                                quorumState.markReplicaFailed(replicaIndex);
+                            } else {
+                                quorumState.markReplicaSuccess(replicaIndex);
+                            }
+                        });
+                    secondaryFutures.add(secondaryFuture);
+                }
+                
+                // Return first successful read
+                return FutureUtil.firstSuccess(secondaryFutures)
+                    .thenApply(readResult -> {
+                        // Trigger read repair if enabled and we read from secondary
+                        if (config.isEnableReadRepair()) {
+                            triggerReadRepair(context, streamId, startOffset, endOffset, readResult);
+                        }
+                        return readResult;
+                    });
             }
-            
-            // Return first successful read
-            return FutureUtil.firstSuccess(secondaryFutures)
-                .exceptionally(secondaryEx -> {
-                    LOGGER.error("All replicas failed for read", secondaryEx);
-                    throw new RuntimeException("All replicas failed for read", secondaryEx);
-                }).join();
+        }).thenCompose(future -> future)
+          .exceptionally(allFailedEx -> {
+              LOGGER.error("All replicas failed for read", allFailedEx);
+              throw new RuntimeException("All replicas failed for read", allFailedEx);
+          });
+    }
+
+    private void triggerReadRepair(FetchContext context, long streamId, long startOffset, long endOffset, ReadDataBlock data) {
+        // Asynchronously repair the primary replica
+        CompletableFuture.runAsync(() -> {
+            try {
+                LOGGER.debug("Triggering read repair for streamId={}, startOffset={}, endOffset={}", 
+                    streamId, startOffset, endOffset);
+                // This would require implementing a repair mechanism
+                // For now, just log that repair would be triggered
+                LOGGER.debug("Read repair would be triggered here for primary replica");
+            } catch (Exception e) {
+                LOGGER.warn("Read repair failed", e);
+            }
         });
     }
 
@@ -180,6 +238,39 @@ public class S3QuorumStorage implements Storage {
      */
     public QuorumState getQuorumState() {
         return quorumState;
+    }
+
+    /**
+     * Check if the quorum storage is healthy and can handle writes
+     */
+    public boolean isHealthy() {
+        return quorumState.hasQuorum();
+    }
+
+    /**
+     * Get the number of healthy replicas
+     */
+    public int getHealthyReplicaCount() {
+        return quorumState.getHealthyReplicaCount();
+    }
+
+    /**
+     * Get replica health status
+     */
+    public boolean[] getReplicaHealthStatus() {
+        boolean[] status = new boolean[replicas.size()];
+        for (int i = 0; i < replicas.size(); i++) {
+            status[i] = quorumState.isReplicaHealthy(i);
+        }
+        return status;
+    }
+
+    /**
+     * Reset failure counts for all replicas
+     */
+    public void resetAllFailureCounts() {
+        quorumState.resetAllFailureCounts();
+        LOGGER.info("Reset all replica failure counts");
     }
 
     /**

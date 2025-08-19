@@ -290,6 +290,8 @@ class S3QuorumStorageTest {
             .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Primary failure")));
         when(mockStorage2.read(any(FetchContext.class), eq(1L), eq(0L), eq(100L), eq(1024)))
             .thenReturn(CompletableFuture.completedFuture(mockDataBlock));
+        when(mockStorage3.read(any(FetchContext.class), eq(1L), eq(0L), eq(100L), eq(1024)))
+            .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Third replica failure")));
 
         // Execute
         FetchContext context = FetchContext.DEFAULT;
