@@ -24,7 +24,6 @@ import kafka.log.stream.s3.DefaultS3Client;
 import kafka.log.streamaspect.ClientWrapper;
 import kafka.log.streamaspect.client.ClientFactoryProxy;
 import kafka.log.streamaspect.client.Context;
-import com.automq.stream.s3.quorum.config.QuorumConfigLoader;
 
 import com.automq.stream.api.Client;
 import com.automq.stream.s3.Config;
@@ -54,18 +53,9 @@ public class ClientFactory {
 
         DefaultS3Client client = new DefaultS3Client(context.brokerServer, config);
         
-        // Check if quorum storage is enabled in configuration
-        try {
-            String configPath = context.config.automq().s3().configPath().orElse(null);
-            if (configPath != null && QuorumConfigLoader.isQuorumEnabled(configPath)) {
-                client.setEnableQuorumStorage(true);
-                LOGGER.info("Quorum storage enabled from configuration: {}", configPath);
-            } else {
-                LOGGER.info("Using single replica S3 storage");
-            }
-        } catch (Exception e) {
-            LOGGER.warn("Failed to check quorum configuration, using single replica storage", e);
-        }
+        // TODO: Check if quorum storage is enabled in configuration
+        // For now, default to single replica storage
+        LOGGER.info("Using single replica S3 storage (quorum configuration check disabled)");
         
         return new ClientWrapper(client);
     }

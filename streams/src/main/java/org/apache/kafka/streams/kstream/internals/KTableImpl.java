@@ -1236,8 +1236,8 @@ public class KTableImpl<K, S, V> extends AbstractStream<K, V> implements KTable<
         final StreamSinkNode<K, SubscriptionResponseWrapper<VO>> foreignResponseSink =
             new StreamSinkNode<>(
                 renamed.suffixWithOrElseGet("-subscription-response-sink", builder, SINK_NAME),
-                new StaticTopicNameExtractor<>(finalRepartitionTopicName),
-                new ProducedInternal<>(Produced.with(keySerde, responseWrapperSerde, foreignResponseSinkPartitioner))
+                new StaticTopicNameExtractor<K, SubscriptionResponseWrapper<VO>>(finalRepartitionTopicName),
+                new ProducedInternal<K, SubscriptionResponseWrapper<VO>>(Produced.with(keySerde, responseWrapperSerde, foreignResponseSinkPartitioner))
             );
         builder.addGraphNode(subscriptionJoinNode, foreignResponseSink);
         builder.addGraphNode(foreignTableJoinNode, foreignResponseSink);

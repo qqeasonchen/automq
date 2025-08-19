@@ -255,7 +255,13 @@ public class ElasticLogFileRecords implements AutoCloseable {
 
     public void close() {
         status = ElasticResourceStatus.CLOSED;
-        suppress(this::flush, LOGGER);
+        suppress(() -> {
+            try {
+                flush();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }, LOGGER);
     }
 
     public void closeHandlers() {
