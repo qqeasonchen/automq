@@ -27,10 +27,8 @@ import kafka.log.stream.s3.node.NodeManagerStub;
 import kafka.log.stream.s3.node.NoopNodeManager;
 import kafka.log.stream.s3.objects.ControllerObjectManager;
 import kafka.log.stream.s3.streams.ControllerStreamManager;
-import kafka.log.stream.s3.wal.BootstrapWalV1;
 import kafka.log.stream.s3.wal.DefaultWalFactory;
 import kafka.server.BrokerServer;
-import kafka.log.stream.s3.ControllerKVClient;
 
 import org.apache.kafka.image.MetadataImage;
 import org.apache.kafka.server.common.automq.AutoMQVersion;
@@ -40,6 +38,7 @@ import com.automq.stream.api.KVClient;
 import com.automq.stream.api.StreamClient;
 import com.automq.stream.s3.Config;
 import com.automq.stream.s3.S3Storage;
+import com.automq.stream.s3.Storage;
 import com.automq.stream.s3.S3StreamClient;
 import com.automq.stream.s3.cache.S3BlockCache;
 import com.automq.stream.s3.cache.blockcache.DefaultObjectReaderFactory;
@@ -54,8 +53,6 @@ import com.automq.stream.s3.failover.ForceCloseStorageFailureHandler;
 import com.automq.stream.s3.failover.HaltStorageFailureHandler;
 import com.automq.stream.s3.failover.StorageFailureHandlerChain;
 import com.automq.stream.s3.index.LocalStreamRangeIndexCache;
-import com.automq.stream.s3.metrics.S3StreamMetricsManager;
-import com.automq.stream.s3.metrics.stats.NetworkStats;
 import com.automq.stream.s3.network.AsyncNetworkBandwidthLimiter;
 import com.automq.stream.s3.network.GlobalNetworkBandwidthLimiters;
 import com.automq.stream.s3.network.NetworkBandwidthLimiter;
@@ -63,12 +60,9 @@ import com.automq.stream.s3.objects.ObjectManager;
 import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.s3.operator.ObjectStorageFactory;
 import com.automq.stream.s3.streams.StreamManager;
-import com.automq.stream.s3.wal.DefaultWalHandle;
 import com.automq.stream.s3.wal.WalFactory;
-import com.automq.stream.s3.wal.WalHandle;
 import com.automq.stream.s3.wal.WriteAheadLog;
-import com.automq.stream.utils.LogContext;
-import com.automq.stream.utils.threads.S3StreamThreadPoolMonitor;
+import com.automq.stream.utils.IdURI;
 import com.automq.stream.s3.quorum.factory.S3QuorumStorageFactory;
 
 import org.slf4j.Logger;
@@ -76,10 +70,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 import static com.automq.stream.s3.operator.ObjectStorageFactory.EXTENSION_TYPE_BACKGROUND;
-import static com.automq.stream.s3.operator.ObjectStorageFactory.EXTENSION_TYPE_KEY;
 import static com.automq.stream.s3.operator.ObjectStorageFactory.EXTENSION_TYPE_MAIN;
 
 public class DefaultS3Client implements Client {
@@ -96,7 +88,7 @@ public class DefaultS3Client implements Client {
 
     protected WriteAheadLog writeAheadLog;
     protected StorageFailureHandlerChain storageFailureHandlerChain;
-    protected S3Storage storage;
+    protected Storage storage;
     protected boolean enableQuorumStorage = false;
 
     protected ObjectReaderFactory objectReaderFactory;
@@ -144,19 +136,8 @@ public class DefaultS3Client implements Client {
         // Initialize WAL
         writeAheadLog = buildWAL();
         
-        // Initialize failure handler
-        storageFailureHandlerChain = new StorageFailureHandlerChain();
-        storageFailureHandlerChain.addHandler(new HaltStorageFailureHandler());
-        storageFailureHandlerChain.addHandler(new ForceCloseStorageFailureHandler());
-        
-        // Initialize block cache
-        blockCache = new S3BlockCache(config.blockCacheSize());
-        
-        // Initialize object reader factory
-        objectReaderFactory = new DefaultObjectReaderFactory(blockCache);
-        
-        // Initialize stream readers
-        StreamReaders streamReaders = new StreamReaders(objectReaderFactory);
+        // Initialize object reader factory (needs object storage)
+        objectReaderFactory = new DefaultObjectReaderFactory(mainObjectStorage);
         
         // Initialize local index cache
         localIndexCache = LocalStreamRangeIndexCache.create();
@@ -174,8 +155,20 @@ public class DefaultS3Client implements Client {
         // Initialize object manager
         objectManager = newObjectManager(config.nodeId(), config.nodeEpoch(), false);
         
+        // Initialize block cache (StreamReaders implementation)
+        blockCache = new StreamReaders(config.blockCacheSize(), objectManager, mainObjectStorage, objectReaderFactory);
+        
         // Initialize compaction manager
         compactionManager = new CompactionManager(config, objectManager, streamManager, mainObjectStorage);
+        
+        // Initialize stream client first (needed for failure handler)
+        streamClient = new S3StreamClient(streamManager, null, objectManager, 
+                                        backgroundObjectStorage, config, networkInboundLimiter, networkOutboundLimiter);
+        
+        // Initialize failure handler (now that we have streamClient)
+        storageFailureHandlerChain = new StorageFailureHandlerChain();
+        storageFailureHandlerChain.addHandler(new HaltStorageFailureHandler());
+        storageFailureHandlerChain.addHandler(new ForceCloseStorageFailureHandler(streamClient));
         
         // Initialize storage based on configuration
         if (enableQuorumStorage) {
@@ -189,7 +182,7 @@ public class DefaultS3Client implements Client {
             LOGGER.info("Using single replica S3Storage");
         }
         
-        // Initialize stream client
+        // Update stream client with the storage
         streamClient = new S3StreamClient(streamManager, storage, objectManager, 
                                         backgroundObjectStorage, config, networkInboundLimiter, networkOutboundLimiter);
         
@@ -207,11 +200,9 @@ public class DefaultS3Client implements Client {
             LOGGER.info("Starting S3Stream components...");
             writeAheadLog.start();
             storage.startup();
-            streamManager.startup();
-            objectManager.startup();
+            // Note: streamManager and objectManager don't have startup methods in their interfaces
             compactionManager.start();
-            metadataManager.startup();
-            nodeManager.startup();
+            // Note: metadataManager and nodeManager don't have startup methods in their interfaces
             LOGGER.info("S3Stream components started successfully");
         } catch (Exception e) {
             LOGGER.error("Failed to start S3Stream components", e);
@@ -229,18 +220,8 @@ public class DefaultS3Client implements Client {
             if (compactionManager != null) {
                 compactionManager.shutdown();
             }
-            if (streamManager != null) {
-                streamManager.shutdown();
-            }
-            if (objectManager != null) {
-                objectManager.shutdown();
-            }
-            if (metadataManager != null) {
-                metadataManager.shutdown();
-            }
-            if (nodeManager != null) {
-                nodeManager.shutdown();
-            }
+            // Note: streamManager, objectManager, metadataManager, and nodeManager 
+            // don't have shutdown methods in their interfaces
             LOGGER.info("DefaultS3Client shutdown completed");
         } catch (Exception e) {
             LOGGER.error("Error during shutdown", e);
@@ -263,7 +244,24 @@ public class DefaultS3Client implements Client {
     }
 
     protected WriteAheadLog buildWAL() {
-        return DefaultWalFactory.createWal(config.walConfig());
+        // Create WAL factory
+        DefaultWalFactory walFactory = new DefaultWalFactory(
+            config.nodeId(),
+            config.objectTagging() != null ? config.objectTagging() : new HashMap<>(),
+            networkInboundLimiter,
+            networkOutboundLimiter
+        );
+        
+        // Parse WAL config URI
+        IdURI walUri = IdURI.parse(config.walConfig());
+        
+        // Build options
+        WalFactory.BuildOptions buildOptions = WalFactory.BuildOptions.builder()
+            .nodeEpoch(config.nodeEpoch())
+            .failoverMode(false)
+            .build();
+        
+        return walFactory.build(walUri, buildOptions);
     }
 
     protected ObjectStorage newMainObjectStorage() {
@@ -289,7 +287,7 @@ public class DefaultS3Client implements Client {
     }
 
     protected Failover failover() {
-        return new FailoverFactory() {
+        FailoverFactory failoverFactory = new FailoverFactory() {
             @Override
             public StreamManager getStreamManager(int nodeId, long nodeEpoch) {
                 return new ControllerStreamManager(metadataManager, requestSender, nodeId, nodeEpoch, 
@@ -304,21 +302,42 @@ public class DefaultS3Client implements Client {
 
             @Override
             public WriteAheadLog getWal(FailoverRequest request) {
-                return BootstrapWalV1.createWal(request.walPath(), request.walCapacity());
+                // Create WAL factory for failover
+                DefaultWalFactory failoverWalFactory = new DefaultWalFactory(
+                    config.nodeId(),
+                    config.objectTagging() != null ? config.objectTagging() : new HashMap<>(),
+                    networkInboundLimiter,
+                    networkOutboundLimiter
+                );
+                
+                // Parse WAL path
+                IdURI walUri = IdURI.parse(request.getKraftWalConfigs());
+                
+                // Build options for failover
+                WalFactory.BuildOptions buildOptions = WalFactory.BuildOptions.builder()
+                    .nodeEpoch(config.nodeEpoch())
+                    .failoverMode(true)
+                    .build();
+                
+                return failoverWalFactory.build(walUri, buildOptions);
             }
-        }.createFailover();
+        };
+        // TODO: Add proper WALRecover implementation
+        return new Failover(failoverFactory, null);
     }
 
     protected AutoMQVersion getAutoMQVersion() {
+        // TODO: Fix AutoMQVersion retrieval from metadata
         MetadataImage metadataImage = brokerServer.metadataCache().currentImage();
-        return metadataImage.autoMQVersion();
+        // return metadataImage.autoMQVersion(); // Method doesn't exist
+        return AutoMQVersion.LATEST; // Default fallback
     }
 
     private NodeManager getNodeManager() {
         if (config.failoverEnable()) {
-            return new NodeManagerStub();
+            return new NodeManagerStub(requestSender, config.nodeId(), config.nodeEpoch(), new HashMap<>());
         } else {
-            return new NoopNodeManager();
+            return new NoopNodeManager(config.nodeId(), config.nodeEpoch());
         }
     }
 
