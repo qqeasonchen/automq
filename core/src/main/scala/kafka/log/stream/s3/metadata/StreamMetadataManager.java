@@ -139,7 +139,10 @@ public class StreamMetadataManager implements InRangeObjectsFetcher, MetadataPub
     public CompletableFuture<InRangeObjects> fetch(long streamId, long startOffset, long endOffset, int limit) {
         // TODO: cache the object list for next search
         CompletableFuture<InRangeObjects> cf = new CompletableFuture<>();
-        exec(() -> fetch0(cf, streamId, startOffset, endOffset, limit, false), cf, LOGGER, "fetchObjects");
+        exec(() -> {
+            fetch0(cf, streamId, startOffset, endOffset, limit, false);
+            return CompletableFuture.completedFuture(null);
+        }, cf, LOGGER, "fetchObjects");
         return cf;
     }
 
