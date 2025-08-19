@@ -220,8 +220,11 @@ public final class S3StreamsMetadataImage extends AbstractReferenceCounted {
         List<S3StreamSetObject> streamSetObjects,
         NodeS3StreamSetObjectMetadataImage node
     ) {
-        exec(() -> fillObjects0(ctx, stream, objects, lastRangeIndex, streamObjectIndex, streamObjects,
-            streamSetObjectIndex, streamSetObjects, node), ctx.cf, LOGGER, "fillObjects");
+        exec(() -> {
+            fillObjects0(ctx, stream, objects, lastRangeIndex, streamObjectIndex, streamObjects,
+                streamSetObjectIndex, streamSetObjects, node);
+            return CompletableFuture.completedFuture(null);
+        }, ctx.cf, LOGGER, "fillObjects");
     }
 
     void fillObjects0(
