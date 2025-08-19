@@ -38,6 +38,7 @@ import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.s3.operator.ObjectStorageFactory;
 import com.automq.stream.s3.quorum.S3QuorumStorage;
 import com.automq.stream.s3.quorum.config.QuorumConfig;
+import com.automq.stream.s3.quorum.config.QuorumConfigLoader;
 import com.automq.stream.s3.quorum.config.ReplicaConfig;
 import com.automq.stream.s3.streams.StreamManager;
 import com.automq.stream.s3.wal.WriteAheadLog;
@@ -45,6 +46,7 @@ import com.automq.stream.s3.wal.WriteAheadLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -56,7 +58,49 @@ public class S3QuorumStorageFactory {
     private static final Logger LOGGER = LoggerFactory.getLogger(S3QuorumStorageFactory.class);
 
     /**
-     * Create S3QuorumStorage with 3 replicas across different regions
+     * Create S3QuorumStorage from configuration file
+     */
+    public static S3QuorumStorage createFromConfig(
+            String configFilePath,
+            Config baseConfig,
+            WriteAheadLog writeAheadLog,
+            StreamManager streamManager,
+            S3BlockCache blockCache,
+            StorageFailureHandler storageFailureHandler) throws IOException {
+        
+        LOGGER.info("Loading quorum configuration from file: {}", configFilePath);
+        
+        // Load quorum configuration from file
+        QuorumConfig quorumConfig = QuorumConfigLoader.loadFromProperties(configFilePath, baseConfig);
+        
+        LOGGER.info("Loaded quorum configuration: size={}, writeQuorum={}, readQuorum={}", 
+                   quorumConfig.getQuorumSize(), quorumConfig.getWriteQuorumSize(), quorumConfig.getReadQuorumSize());
+        
+        // Create individual S3Storage instances for each replica
+        List<Storage> replicas = new ArrayList<>();
+        List<ReplicaConfig> replicaConfigs = quorumConfig.getReplicaConfigs();
+        
+        for (int i = 0; i < replicaConfigs.size(); i++) {
+            ReplicaConfig replicaConfig = replicaConfigs.get(i);
+            Storage replica = createReplicaStorage(replicaConfig, writeAheadLog, streamManager, 
+                                                 blockCache, storageFailureHandler);
+            replicas.add(replica);
+            LOGGER.info("Created replica {} storage for region: {} ({})", 
+                       i, replicaConfig.getRegion(), replicaConfig.getRole());
+        }
+        
+        return new S3QuorumStorage(quorumConfig, replicas);
+    }
+
+    /**
+     * Check if quorum storage should be used based on configuration file
+     */
+    public static boolean shouldUseQuorumStorage(String configFilePath) {
+        return QuorumConfigLoader.isQuorumEnabled(configFilePath);
+    }
+
+    /**
+     * Create S3QuorumStorage with 3 replicas across different regions (legacy method with default config)
      */
     public static S3QuorumStorage createQuorumStorage(
             Config baseConfig,
