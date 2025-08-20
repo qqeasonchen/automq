@@ -41,6 +41,10 @@ import com.automq.stream.s3.quorum.failover.RecoveryManager;
 import com.automq.stream.s3.quorum.failover.ReplicaFailureState;
 import com.automq.stream.s3.quorum.metrics.QuorumMetrics;
 import com.automq.stream.s3.quorum.metrics.MetricsCollector;
+import com.automq.stream.s3.quorum.healthcheck.HealthCheckScheduler;
+import com.automq.stream.s3.quorum.healthcheck.ReplicaHealthChecker;
+import com.automq.stream.s3.quorum.healthcheck.QuorumHealthChecker;
+import com.automq.stream.s3.quorum.healthcheck.HealthCheckResult;
 import com.automq.stream.utils.FutureUtil;
 
 import io.netty.buffer.ByteBuf;
@@ -70,6 +74,9 @@ public class S3QuorumStorage implements Storage {
     private final RecoveryManager recoveryManager;
     private final QuorumMetrics metrics;
     private final MetricsCollector metricsCollector;
+    private final HealthCheckScheduler healthCheckScheduler;
+    private final List<ReplicaHealthChecker> replicaHealthCheckers;
+    private final QuorumHealthChecker quorumHealthChecker;
     private final AtomicLong writeSequence = new AtomicLong(0);
     
     public S3QuorumStorage(QuorumConfig config, List<Storage> replicas) {
@@ -100,6 +107,33 @@ public class S3QuorumStorage implements Storage {
         // Initialize metrics system
         this.metrics = new QuorumMetrics(config);
         this.metricsCollector = new MetricsCollector(metrics, quorumState);
+        
+        // Initialize health check system
+        this.replicaHealthCheckers = new ArrayList<>();
+        for (int i = 0; i < config.getQuorumSize(); i++) {
+            ReplicaHealthChecker healthChecker = new ReplicaHealthChecker(
+                config.getReplicaConfigs().get(i),
+                replicaStorages.get(i),
+                metrics.getReplicaMetrics(i)
+            );
+            replicaHealthCheckers.add(healthChecker);
+        }
+        
+        this.quorumHealthChecker = new QuorumHealthChecker(
+            config, quorumState, metrics, replicaHealthCheckers
+        );
+        
+        // Health check scheduler with 30 second intervals
+        this.healthCheckScheduler = new HealthCheckScheduler(30000);
+        
+        // Add health checks to scheduler
+        for (ReplicaHealthChecker replicaHealthChecker : replicaHealthCheckers) {
+            healthCheckScheduler.addHealthCheck(replicaHealthChecker);
+        }
+        healthCheckScheduler.addHealthCheck(quorumHealthChecker);
+        
+        // Add health check listener for logging
+        healthCheckScheduler.addListener(new HealthCheckLogger());
         
         // Connect failure detector to recovery manager
         this.failureDetector.addListener(recoveryManager);
@@ -140,6 +174,7 @@ public class S3QuorumStorage implements Storage {
         failureDetector.start();
         recoveryManager.start();
         metricsCollector.start();
+        healthCheckScheduler.start();
         
         LOGGER.info("S3QuorumStorage startup completed with {} replicas", replicas.size());
     }
@@ -148,7 +183,8 @@ public class S3QuorumStorage implements Storage {
     public void shutdown() {
         LOGGER.info("Shutting down S3QuorumStorage");
         
-        // Stop metrics collection and failure detection first
+        // Stop health checks, metrics collection and failure detection first
+        healthCheckScheduler.stop();
         metricsCollector.stop();
         recoveryManager.stop();
         failureDetector.stop();
@@ -564,6 +600,34 @@ public class S3QuorumStorage implements Storage {
     }
     
     /**
+     * Get health check scheduler
+     */
+    public HealthCheckScheduler getHealthCheckScheduler() {
+        return healthCheckScheduler;
+    }
+    
+    /**
+     * Get current health check results
+     */
+    public java.util.Map<String, HealthCheckResult> getHealthCheckResults() {
+        return healthCheckScheduler.getAllLastResults();
+    }
+    
+    /**
+     * Execute health checks immediately
+     */
+    public CompletableFuture<java.util.Map<String, HealthCheckResult>> executeHealthChecks() {
+        return healthCheckScheduler.executeNow();
+    }
+    
+    /**
+     * Add a health check listener
+     */
+    public void addHealthCheckListener(HealthCheckScheduler.HealthCheckListener listener) {
+        healthCheckScheduler.addListener(listener);
+    }
+    
+    /**
      * Add a metrics listener
      */
     public void addMetricsListener(MetricsCollector.MetricsListener listener) {
@@ -643,6 +707,11 @@ public class S3QuorumStorage implements Storage {
         }
         
         @Override
+        public CompletableFuture<List<ObjectInfo>> list(String bucket, String prefix, int maxKeys, String continuationToken) {
+            return CompletableFuture.completedFuture(List.of());
+        }
+        
+        @Override
         public boolean readinessCheck() {
             return true;
         }
@@ -655,6 +724,47 @@ public class S3QuorumStorage implements Storage {
         @Override
         public void close() {
             // No-op
+        }
+    }
+    
+    /**
+     * Health check listener for logging health status changes
+     */
+    private class HealthCheckLogger implements HealthCheckScheduler.HealthCheckListener {
+        
+        @Override
+        public void onHealthCheckResult(String healthCheckName, HealthCheckResult result) {
+            if (result.isHealthy()) {
+                LOGGER.debug("Health check {} completed: HEALTHY ({}ms)", 
+                           healthCheckName, result.getDurationMs());
+            } else {
+                LOGGER.warn("Health check {} completed: {} - {} ({}ms)", 
+                          healthCheckName, result.getStatus(), result.getMessage(), result.getDurationMs());
+            }
+        }
+        
+        @Override
+        public void onHealthStatusChanged(String healthCheckName, 
+                                        HealthCheckResult.Status previousStatus,
+                                        HealthCheckResult.Status newStatus,
+                                        HealthCheckResult result) {
+            LOGGER.info("Health status changed for {}: {} -> {} - {}", 
+                       healthCheckName, previousStatus, newStatus, result.getMessage());
+        }
+        
+        @Override
+        public void onHealthCheckExecution(java.util.Map<String, HealthCheckResult> allResults, long durationMs) {
+            long healthyCount = allResults.values().stream()
+                .mapToLong(result -> result.isHealthy() ? 1 : 0)
+                .sum();
+            
+            LOGGER.debug("Health check execution completed: {}/{} healthy checks ({}ms)", 
+                       healthyCount, allResults.size(), durationMs);
+            
+            if (healthyCount < allResults.size()) {
+                LOGGER.warn("Some health checks are failing: {}/{} healthy", 
+                          healthyCount, allResults.size());
+            }
         }
     }
     
