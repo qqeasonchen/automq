@@ -112,8 +112,27 @@ public class ReplicaHealthChecker implements HealthCheck {
             // Check 3: Recent failure analysis
             FailureHealthStatus failureStatus = analyzeRecentFailures();
             
-            return connectivityCheck.thenApply(unused -> {
-                // Combine all health check results
+            return connectivityCheck.handle((unused, throwable) -> {
+                // Handle connectivity failure
+                if (throwable != null) {
+                    LOGGER.warn("Connectivity check failed for replica {}", replicaConfig.getReplicaId(), throwable);
+                    return resultBuilder
+                        .status(HealthCheckResult.Status.UNHEALTHY)
+                        .message("Connectivity check failed: " + throwable.getMessage())
+                        .exception(throwable)
+                        .detail("replicaId", replicaConfig.getReplicaId())
+                        .detail("endpoint", replicaConfig.getEndpoint())
+                        .detail("region", replicaConfig.getRegion())
+                        .detail("bucket", replicaConfig.getBucket())
+                        .detail("performanceHealthy", performanceStatus.isHealthy)
+                        .detail("failureHealthy", failureStatus.isHealthy)
+                        .detail("successRate", performanceStatus.successRate)
+                        .detail("averageLatency", performanceStatus.averageLatency)
+                        .detail("consecutiveFailures", failureStatus.consecutiveFailures)
+                        .detail("uptimeRatio", performanceStatus.uptimeRatio);
+                }
+                
+                // Combine all health check results (connectivity passed)
                 boolean isHealthy = performanceStatus.isHealthy && failureStatus.isHealthy;
                 
                 resultBuilder

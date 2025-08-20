@@ -20,6 +20,7 @@
 package com.automq.stream.s3.quorum.performance;
 
 import com.automq.stream.s3.cache.ReadDataBlock;
+import com.automq.stream.s3.model.StreamRecordBatch;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -261,8 +262,19 @@ public class ReadCache {
     
     private long estimateDataSize(ReadDataBlock data) {
         // Estimate size based on the number of records and a typical record size
-        // In a real implementation, this would be more accurate
-        return data.getRecords().size() * 200L; // Assume ~200 bytes per record
+        // Enhanced estimation using actual record data when available
+        try {
+            if (data.getRecords() != null && !data.getRecords().isEmpty()) {
+                long totalSize = 0;
+                for (StreamRecordBatch record : data.getRecords()) {
+                    totalSize += record.size();
+                }
+                return totalSize;
+            }
+        } catch (Exception e) {
+            // Fallback to estimation if size calculation fails
+        }
+        return data.getRecords().size() * 200L; // Estimate ~200 bytes per record
     }
     
     /**
@@ -342,14 +354,30 @@ public class ReadCache {
             this.entryTtlMs = entryTtlMs;
         }
         
-        public int getEntryCount() { return entryCount; }
-        public long getMemoryUsage() { return memoryUsage; }
-        public long getTotalHits() { return totalHits; }
-        public long getTotalMisses() { return totalMisses; }
-        public long getTotalEvictions() { return totalEvictions; }
-        public int getMaxEntries() { return maxEntries; }
-        public long getMaxMemoryBytes() { return maxMemoryBytes; }
-        public long getEntryTtlMs() { return entryTtlMs; }
+        public int getEntryCount() {
+            return entryCount;
+        }
+        public long getMemoryUsage() {
+            return memoryUsage;
+        }
+        public long getTotalHits() {
+            return totalHits;
+        }
+        public long getTotalMisses() {
+            return totalMisses;
+        }
+        public long getTotalEvictions() {
+            return totalEvictions;
+        }
+        public int getMaxEntries() {
+            return maxEntries;
+        }
+        public long getMaxMemoryBytes() {
+            return maxMemoryBytes;
+        }
+        public long getEntryTtlMs() {
+            return entryTtlMs;
+        }
         
         public double getHitRate() {
             long totalRequests = totalHits + totalMisses;

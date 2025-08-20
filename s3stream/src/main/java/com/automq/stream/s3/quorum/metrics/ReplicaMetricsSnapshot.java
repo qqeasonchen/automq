@@ -57,43 +57,38 @@ public class ReplicaMetricsSnapshot {
     // Metadata
     private final long timestamp;
     
-    public ReplicaMetricsSnapshot(int replicaId,
-                                 long writeRequestsTotal, long writeRequestsSuccessful, long writeRequestsFailed,
-                                 double writeSuccessRate, double writeAverageLatency,
-                                 long readRequestsTotal, long readRequestsSuccessful, long readRequestsFailed,
-                                 double readSuccessRate, double readAverageLatency,
-                                 boolean healthy, long failureCount, long recoveryCount,
-                                 long consecutiveFailures, long consecutiveSuccesses, double uptimeRatio,
-                                 long timeSinceLastFailure, long timeSinceLastRecovery,
-                                 double overallSuccessRate, double overallAverageLatency,
-                                 long timestamp) {
-        this.replicaId = replicaId;
+    private ReplicaMetricsSnapshot(Builder builder) {
+        this.replicaId = builder.replicaId;
         
-        this.writeRequestsTotal = writeRequestsTotal;
-        this.writeRequestsSuccessful = writeRequestsSuccessful;
-        this.writeRequestsFailed = writeRequestsFailed;
-        this.writeSuccessRate = writeSuccessRate;
-        this.writeAverageLatency = writeAverageLatency;
+        this.writeRequestsTotal = builder.writeRequestsTotal;
+        this.writeRequestsSuccessful = builder.writeRequestsSuccessful;
+        this.writeRequestsFailed = builder.writeRequestsFailed;
+        this.writeSuccessRate = builder.writeSuccessRate;
+        this.writeAverageLatency = builder.writeAverageLatency;
         
-        this.readRequestsTotal = readRequestsTotal;
-        this.readRequestsSuccessful = readRequestsSuccessful;
-        this.readRequestsFailed = readRequestsFailed;
-        this.readSuccessRate = readSuccessRate;
-        this.readAverageLatency = readAverageLatency;
+        this.readRequestsTotal = builder.readRequestsTotal;
+        this.readRequestsSuccessful = builder.readRequestsSuccessful;
+        this.readRequestsFailed = builder.readRequestsFailed;
+        this.readSuccessRate = builder.readSuccessRate;
+        this.readAverageLatency = builder.readAverageLatency;
         
-        this.healthy = healthy;
-        this.failureCount = failureCount;
-        this.recoveryCount = recoveryCount;
-        this.consecutiveFailures = consecutiveFailures;
-        this.consecutiveSuccesses = consecutiveSuccesses;
-        this.uptimeRatio = uptimeRatio;
-        this.timeSinceLastFailure = timeSinceLastFailure;
-        this.timeSinceLastRecovery = timeSinceLastRecovery;
+        this.healthy = builder.healthy;
+        this.failureCount = builder.failureCount;
+        this.recoveryCount = builder.recoveryCount;
+        this.consecutiveFailures = builder.consecutiveFailures;
+        this.consecutiveSuccesses = builder.consecutiveSuccesses;
+        this.uptimeRatio = builder.uptimeRatio;
+        this.timeSinceLastFailure = builder.timeSinceLastFailure;
+        this.timeSinceLastRecovery = builder.timeSinceLastRecovery;
         
-        this.overallSuccessRate = overallSuccessRate;
-        this.overallAverageLatency = overallAverageLatency;
+        this.overallSuccessRate = builder.overallSuccessRate;
+        this.overallAverageLatency = builder.overallAverageLatency;
         
-        this.timestamp = timestamp;
+        this.timestamp = builder.timestamp;
+    }
+    
+    public static Builder builder() {
+        return new Builder();
     }
     
     // Basic getters
@@ -273,43 +268,85 @@ public class ReplicaMetricsSnapshot {
     }
     
     /**
-     * Format replica metrics for detailed display
+     * Builder pattern for ReplicaMetricsSnapshot
      */
-    public String toDetailedString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append(String.format("=== Replica %d Metrics ===\n", replicaId));
-        sb.append(String.format("Status: %s (Healthy: %s)\n", getPerformanceStatus(), healthy));
-        sb.append(String.format("Reliability Score: %.2f\n\n", getReliabilityScore()));
+    public static class Builder {
+        private int replicaId;
+        private long writeRequestsTotal;
+        private long writeRequestsSuccessful;
+        private long writeRequestsFailed;
+        private double writeSuccessRate;
+        private double writeAverageLatency;
+        private long readRequestsTotal;
+        private long readRequestsSuccessful;
+        private long readRequestsFailed;
+        private double readSuccessRate;
+        private double readAverageLatency;
+        private boolean healthy;
+        private long failureCount;
+        private long recoveryCount;
+        private long consecutiveFailures;
+        private long consecutiveSuccesses;
+        private double uptimeRatio;
+        private long timeSinceLastFailure;
+        private long timeSinceLastRecovery;
+        private double overallSuccessRate;
+        private double overallAverageLatency;
+        private long timestamp;
         
-        sb.append("Write Operations:\n");
-        sb.append(String.format("  Total: %d, Successful: %d, Failed: %d\n", 
-                                writeRequestsTotal, writeRequestsSuccessful, writeRequestsFailed));
-        sb.append(String.format("  Success Rate: %.2f%%, Average Latency: %.2f ms\n\n", 
-                                writeSuccessRate * 100, writeAverageLatency));
-        
-        sb.append("Read Operations:\n");
-        sb.append(String.format("  Total: %d, Successful: %d, Failed: %d\n", 
-                                readRequestsTotal, readRequestsSuccessful, readRequestsFailed));
-        sb.append(String.format("  Success Rate: %.2f%%, Average Latency: %.2f ms\n\n", 
-                                readSuccessRate * 100, readAverageLatency));
-        
-        sb.append("Health Statistics:\n");
-        sb.append(String.format("  Total Failures: %d, Recoveries: %d\n", failureCount, recoveryCount));
-        sb.append(String.format("  Consecutive Failures: %d, Successes: %d\n", 
-                                consecutiveFailures, consecutiveSuccesses));
-        sb.append(String.format("  Uptime Ratio: %.2f%%\n", uptimeRatio * 100));
-        
-        if (timeSinceLastFailure >= 0) {
-            sb.append(String.format("  Time Since Last Failure: %d ms\n", timeSinceLastFailure));
-        }
-        if (timeSinceLastRecovery >= 0) {
-            sb.append(String.format("  Time Since Last Recovery: %d ms\n", timeSinceLastRecovery));
+        public Builder replicaId(int replicaId) {
+            this.replicaId = replicaId;
+            return this;
         }
         
-        sb.append(String.format("\nOverall: %.2f%% success rate, %.2f ms avg latency\n", 
-                                overallSuccessRate * 100, overallAverageLatency));
-        sb.append(String.format("Timestamp: %d", timestamp));
+        public Builder writeMetrics(long total, long successful, long failed, 
+                                  double successRate, double avgLatency) {
+            this.writeRequestsTotal = total;
+            this.writeRequestsSuccessful = successful;
+            this.writeRequestsFailed = failed;
+            this.writeSuccessRate = successRate;
+            this.writeAverageLatency = avgLatency;
+            return this;
+        }
         
-        return sb.toString();
+        public Builder readMetrics(long total, long successful, long failed,
+                                 double successRate, double avgLatency) {
+            this.readRequestsTotal = total;
+            this.readRequestsSuccessful = successful;
+            this.readRequestsFailed = failed;
+            this.readSuccessRate = successRate;
+            this.readAverageLatency = avgLatency;
+            return this;
+        }
+        
+        public Builder healthMetrics(boolean healthy, long failures, long recoveries,
+                                   long consecutiveFailures, long consecutiveSuccesses,
+                                   double uptimeRatio, long timeSinceLastFailure,
+                                   long timeSinceLastRecovery) {
+            this.healthy = healthy;
+            this.failureCount = failures;
+            this.recoveryCount = recoveries;
+            this.consecutiveFailures = consecutiveFailures;
+            this.consecutiveSuccesses = consecutiveSuccesses;
+            this.uptimeRatio = uptimeRatio;
+            this.timeSinceLastFailure = timeSinceLastFailure;
+            this.timeSinceLastRecovery = timeSinceLastRecovery;
+            return this;
+        }
+        
+        public Builder overallMetrics(double successRate, double avgLatency) {
+            this.overallSuccessRate = successRate;
+            this.overallAverageLatency = avgLatency;
+            return this;
+        }
+        
+        public Builder timestamp(long timestamp) {
+            this.timestamp = timestamp;
+            return this;
+        }
+        
+        public ReplicaMetricsSnapshot build() {
+            return new ReplicaMetricsSnapshot(this);
+        }
     }
 }

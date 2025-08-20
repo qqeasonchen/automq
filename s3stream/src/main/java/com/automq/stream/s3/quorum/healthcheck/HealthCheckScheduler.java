@@ -359,12 +359,24 @@ public class HealthCheckScheduler {
             this.intervalMs = intervalMs;
         }
         
-        public boolean isRunning() { return running; }
-        public int getHealthCheckCount() { return healthCheckCount; }
-        public int getListenerCount() { return listenerCount; }
-        public long getLastExecutionTime() { return lastExecutionTime; }
-        public long getExecutionCount() { return executionCount; }
-        public long getIntervalMs() { return intervalMs; }
+        public boolean isRunning() {
+            return running;
+        }
+        public int getHealthCheckCount() {
+            return healthCheckCount;
+        }
+        public int getListenerCount() {
+            return listenerCount;
+        }
+        public long getLastExecutionTime() {
+            return lastExecutionTime;
+        }
+        public long getExecutionCount() {
+            return executionCount;
+        }
+        public long getIntervalMs() {
+            return intervalMs;
+        }
         
         @Override
         public String toString() {

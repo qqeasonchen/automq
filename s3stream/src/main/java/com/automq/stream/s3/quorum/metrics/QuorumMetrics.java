@@ -285,6 +285,33 @@ public class QuorumMetrics {
         return quorumLossEvents.get();
     }
     
+    // Repair operation metrics
+    
+    public void recordReplicaRepair(int replicaId) {
+        replicaRecoveriesTotal.incrementAndGet();
+        ReplicaMetrics replica = replicaMetrics.get(replicaId);
+        if (replica != null) {
+            replica.recordRepairSuccess();
+        }
+    }
+    
+    public void recordReplicaRepairFailure(int replicaId) {
+        ReplicaMetrics replica = replicaMetrics.get(replicaId);
+        if (replica != null) {
+            replica.recordRepairFailure();
+        }
+    }
+    
+    public void recordInconsistencyRepairSuccess() {
+        // Track successful consistency repairs
+        replicaRecoveriesTotal.incrementAndGet();
+    }
+    
+    public void recordInconsistencyRepairFailure() {
+        // Track failed consistency repairs
+        replicaFailuresTotal.incrementAndGet();
+    }
+    
     public ReplicaMetrics getReplicaMetrics(int replicaId) {
         return replicaMetrics.get(replicaId);
     }
@@ -297,38 +324,37 @@ public class QuorumMetrics {
      * Get a comprehensive metrics snapshot
      */
     public MetricsSnapshot getSnapshot() {
-        return new MetricsSnapshot(
-            // Write metrics
-            getWriteRequestsTotal(),
-            getWriteRequestsSuccessful(),
-            getWriteRequestsFailed(),
-            getWriteSuccessRate(),
-            getWriteAverageLatency(),
-            getWriteBytesTotal(),
-            
-            // Read metrics
-            getReadRequestsTotal(),
-            getReadRequestsSuccessful(),
-            getReadRequestsFailed(),
-            getReadSuccessRate(),
-            getReadAverageLatency(),
-            getReadBytesTotal(),
-            
-            // Health metrics
-            getHealthyReplicas(),
-            getTotalReplicas(),
-            getQuorumHealthRatio(),
-            getQuorumAvailability(),
-            
-            // Failure metrics
-            getReplicaFailuresTotal(),
-            getReplicaRecoveriesTotal(),
-            getEmergencyRecoveriesTotal(),
-            getQuorumLossEvents(),
-            
-            // Timestamp
-            System.currentTimeMillis()
-        );
+        return MetricsSnapshot.builder()
+            .writeMetrics(
+                getWriteRequestsTotal(),
+                getWriteRequestsSuccessful(),
+                getWriteRequestsFailed(),
+                getWriteSuccessRate(),
+                getWriteAverageLatency(),
+                getWriteBytesTotal()
+            )
+            .readMetrics(
+                getReadRequestsTotal(),
+                getReadRequestsSuccessful(),
+                getReadRequestsFailed(),
+                getReadSuccessRate(),
+                getReadAverageLatency(),
+                getReadBytesTotal()
+            )
+            .healthMetrics(
+                getHealthyReplicas(),
+                getTotalReplicas(),
+                getQuorumHealthRatio(),
+                getQuorumAvailability()
+            )
+            .failureMetrics(
+                getReplicaFailuresTotal(),
+                getReplicaRecoveriesTotal(),
+                getEmergencyRecoveriesTotal(),
+                getQuorumLossEvents()
+            )
+            .timestamp(System.currentTimeMillis())
+            .build();
     }
     
     /**

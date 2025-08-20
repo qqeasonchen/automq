@@ -27,7 +27,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -35,7 +34,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.function.Function;
 
 /**
  * Write-through cache for S3 Quorum Storage writes
@@ -394,15 +392,41 @@ public class WriteCache {
             this.entryTtlMs = entryTtlMs;
         }
         
-        public int getStreamCount() { return streamCount; }
-        public int getTotalEntries() { return totalEntries; }
-        public long getMemoryUsage() { return memoryUsage; }
-        public long getTotalHits() { return totalHits; }
-        public long getTotalMisses() { return totalMisses; }
-        public long getTotalWrites() { return totalWrites; }
-        public int getMaxEntriesPerStream() { return maxEntriesPerStream; }
-        public long getMaxMemoryBytes() { return maxMemoryBytes; }
-        public long getEntryTtlMs() { return entryTtlMs; }
+        public int getStreamCount() {
+            return streamCount;
+        }
+        
+        public int getTotalEntries() {
+            return totalEntries;
+        }
+        
+        public long getMemoryUsage() {
+            return memoryUsage;
+        }
+        
+        public long getTotalHits() {
+            return totalHits;
+        }
+        
+        public long getTotalMisses() {
+            return totalMisses;
+        }
+        
+        public long getTotalWrites() {
+            return totalWrites;
+        }
+        
+        public int getMaxEntriesPerStream() {
+            return maxEntriesPerStream;
+        }
+        
+        public long getMaxMemoryBytes() {
+            return maxMemoryBytes;
+        }
+        
+        public long getEntryTtlMs() {
+            return entryTtlMs;
+        }
         
         public double getHitRate() {
             long totalRequests = totalHits + totalMisses;

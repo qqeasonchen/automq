@@ -92,9 +92,45 @@ public class ObjectStorageFactory {
      * Create ObjectStorage with specified extension type
      */
     public static ObjectStorage createObjectStorage(Config config, String extensionType) {
+        // Create a default bucket URI if none is provided in config
+        BucketURI defaultBucket = createDefaultBucket(config, extensionType);
+        
         return instance().builder()
+            .bucket(defaultBucket)
             .extension(EXTENSION_TYPE_KEY, extensionType)
             .build();
+    }
+    
+    /**
+     * Create a default bucket URI based on configuration
+     */
+    private static BucketURI createDefaultBucket(Config config, String extensionType) {
+        // Try to get bucket configuration from Config
+        // For development/testing, use a default memory bucket
+        String bucketStr;
+        
+        // Check if we can get actual S3 configuration from Config
+        try {
+            // Use reflection to check if Config has S3 bucket configuration
+            java.lang.reflect.Method getBucketMethod = config.getClass().getMethod("bucket");
+            Object bucketValue = getBucketMethod.invoke(config);
+            if (bucketValue != null && !bucketValue.toString().isEmpty()) {
+                return BucketURI.parse(bucketValue.toString());
+            }
+        } catch (Exception e) {
+            // Config doesn't have bucket method or it's null, use default
+        }
+        
+        // Default to memory storage for development/testing
+        if ("main".equals(extensionType)) {
+            bucketStr = "0@mem://main-bucket";
+        } else if ("background".equals(extensionType)) {
+            bucketStr = "1@mem://background-bucket";
+        } else {
+            bucketStr = "0@mem://default-bucket";
+        }
+        
+        return BucketURI.parse(bucketStr);
     }
 
     /**
@@ -222,6 +258,18 @@ public class ObjectStorageFactory {
             if (StringUtils.isEmpty(this.threadPrefix)) {
                 this.threadPrefix = Long.toString(defaultThreadPrefixCounter.getAndIncrement());
             }
+            
+            // Ensure bucket is not null
+            if (bucket == null && (buckets == null || buckets.isEmpty())) {
+                throw new IllegalStateException("Bucket configuration is required but not provided. " +
+                    "Please ensure proper bucket configuration is set in the system properties or configuration files.");
+            }
+            
+            // If bucket is null but buckets is not empty, use the first bucket
+            if (bucket == null && buckets != null && !buckets.isEmpty()) {
+                bucket = buckets.get(0);
+            }
+            
             ObjectStorage objectStorage;
             if (buckets != null && buckets.size() > 1) {
                 objectStorage = protocolHandlers.get(PROTOCOL_ROOT).apply(this);

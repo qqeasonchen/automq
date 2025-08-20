@@ -20,7 +20,6 @@
 package com.automq.stream.s3.quorum.healthcheck;
 
 import com.automq.stream.s3.Config;
-import com.automq.stream.s3.cache.ReadDataBlock;
 import com.automq.stream.s3.context.AppendContext;
 import com.automq.stream.s3.context.FetchContext;
 import com.automq.stream.s3.model.StreamRecordBatch;

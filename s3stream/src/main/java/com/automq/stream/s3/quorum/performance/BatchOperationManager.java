@@ -349,14 +349,30 @@ public class BatchOperationManager {
             this.maxBatchMemoryBytes = maxBatchMemoryBytes;
         }
         
-        public boolean isRunning() { return running; }
-        public int getPendingRequests() { return pendingRequests; }
-        public long getTotalBatchesProcessed() { return totalBatchesProcessed; }
-        public long getTotalRequestsBatched() { return totalRequestsBatched; }
-        public long getTotalBytesProcessed() { return totalBytesProcessed; }
-        public int getMaxBatchSize() { return maxBatchSize; }
-        public long getMaxBatchWaitTimeMs() { return maxBatchWaitTimeMs; }
-        public long getMaxBatchMemoryBytes() { return maxBatchMemoryBytes; }
+        public boolean isRunning() {
+            return running;
+        }
+        public int getPendingRequests() {
+            return pendingRequests;
+        }
+        public long getTotalBatchesProcessed() {
+            return totalBatchesProcessed;
+        }
+        public long getTotalRequestsBatched() {
+            return totalRequestsBatched;
+        }
+        public long getTotalBytesProcessed() {
+            return totalBytesProcessed;
+        }
+        public int getMaxBatchSize() {
+            return maxBatchSize;
+        }
+        public long getMaxBatchWaitTimeMs() {
+            return maxBatchWaitTimeMs;
+        }
+        public long getMaxBatchMemoryBytes() {
+            return maxBatchMemoryBytes;
+        }
         
         public double getAverageBatchSize() {
             return totalBatchesProcessed > 0 ? 

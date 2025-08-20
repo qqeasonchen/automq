@@ -134,7 +134,7 @@ public class QuorumMetricsTest {
         assertEquals(3, metrics.getWriteRequestsTotal());
         assertEquals(2, metrics.getWriteRequestsSuccessful());
         assertEquals(1, metrics.getWriteRequestsFailed());
-        assertEquals(2.0/3.0, metrics.getWriteSuccessRate(), 0.001);
+        assertEquals(2.0 / 3.0, metrics.getWriteSuccessRate(), 0.001);
         assertEquals(150.0, metrics.getWriteAverageLatency(), 0.001); // (100+150+200)/3
         assertEquals(3072, metrics.getWriteBytesTotal()); // 1024+2048
         
@@ -160,7 +160,7 @@ public class QuorumMetricsTest {
         assertEquals(3, metrics.getReadRequestsTotal());
         assertEquals(2, metrics.getReadRequestsSuccessful());
         assertEquals(1, metrics.getReadRequestsFailed());
-        assertEquals(2.0/3.0, metrics.getReadSuccessRate(), 0.001);
+        assertEquals(2.0 / 3.0, metrics.getReadSuccessRate(), 0.001);
         assertEquals(75.0, metrics.getReadAverageLatency(), 0.001); // (50+75+100)/3
         assertEquals(768, metrics.getReadBytesTotal()); // 512+256
         
@@ -182,13 +182,16 @@ public class QuorumMetricsTest {
         Thread.sleep(100);
         metrics.updateQuorumHealth(2, true); // Still has quorum
         assertEquals(2, metrics.getHealthyReplicas());
-        assertEquals(2.0/3.0, metrics.getQuorumHealthRatio(), 0.001);
+        assertEquals(2.0 / 3.0, metrics.getQuorumHealthRatio(), 0.001);
         
         // Simulate quorum loss
         Thread.sleep(100);
         metrics.updateQuorumHealth(1, false);
         assertEquals(1, metrics.getHealthyReplicas());
-        assertEquals(1.0/3.0, metrics.getQuorumHealthRatio(), 0.001);
+        assertEquals(1.0 / 3.0, metrics.getQuorumHealthRatio(), 0.001);
+        
+        // Wait a bit to accumulate some unavailable time
+        Thread.sleep(50);
         assertTrue(metrics.getQuorumUnavailableTime() > 0);
         
         LOGGER.info("Quorum health metrics test completed successfully");
