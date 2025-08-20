@@ -707,11 +707,6 @@ public class S3QuorumStorage implements Storage {
         }
         
         @Override
-        public CompletableFuture<List<ObjectInfo>> list(String bucket, String prefix, int maxKeys, String continuationToken) {
-            return CompletableFuture.completedFuture(List.of());
-        }
-        
-        @Override
         public boolean readinessCheck() {
             return true;
         }
