@@ -20,7 +20,7 @@
 package com.automq.stream.s3.quorum.healthcheck;
 
 import com.automq.stream.s3.Config;
-import com.automq.stream.s3.ObjectStorage;
+import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.s3.quorum.config.ReplicaConfig;
 import com.automq.stream.s3.quorum.metrics.ReplicaMetrics;
 
@@ -40,10 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.when;
 
 /**
@@ -97,7 +94,7 @@ public class ReplicaHealthCheckerTest {
         replicaMetrics.recordRead(true, 60);
 
         // Mock successful connectivity
-        when(mockObjectStorage.list(anyString(), anyString(), anyInt(), isNull()))
+        when(mockObjectStorage.list(anyString()))
             .thenReturn(CompletableFuture.completedFuture(java.util.List.of()));
 
         HealthCheckResult result = healthChecker.check().get(5, TimeUnit.SECONDS);
@@ -125,7 +122,7 @@ public class ReplicaHealthCheckerTest {
         replicaMetrics.recordRead(true, 50);
 
         // Mock connectivity failure
-        when(mockObjectStorage.list(anyString(), anyString(), anyInt(), isNull()))
+        when(mockObjectStorage.list(anyString()))
             .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Connection timeout")));
 
         HealthCheckResult result = healthChecker.check().get(5, TimeUnit.SECONDS);
@@ -157,7 +154,7 @@ public class ReplicaHealthCheckerTest {
         replicaMetrics.recordRead(true, 7000);
 
         // Mock successful connectivity
-        when(mockObjectStorage.list(anyString(), anyString(), anyInt(), isNull()))
+        when(mockObjectStorage.list(anyString()))
             .thenReturn(CompletableFuture.completedFuture(java.util.List.of()));
 
         HealthCheckResult result = healthChecker.check().get(5, TimeUnit.SECONDS);
@@ -182,7 +179,7 @@ public class ReplicaHealthCheckerTest {
         }
 
         // Mock successful connectivity
-        when(mockObjectStorage.list(anyString(), anyString(), anyInt(), isNull()))
+        when(mockObjectStorage.list(anyString()))
             .thenReturn(CompletableFuture.completedFuture(java.util.List.of()));
 
         HealthCheckResult result = healthChecker.check().get(5, TimeUnit.SECONDS);
@@ -207,7 +204,7 @@ public class ReplicaHealthCheckerTest {
             replicaConfig, mockObjectStorage, replicaMetrics, 100, true); // 100ms timeout
 
         // Mock slow response
-        when(mockObjectStorage.list(anyString(), anyString(), anyInt(), isNull()))
+        when(mockObjectStorage.list(anyString()))
             .thenReturn(CompletableFuture.supplyAsync(() -> {
                 try {
                     Thread.sleep(200); // 200ms delay, longer than timeout
@@ -257,7 +254,7 @@ public class ReplicaHealthCheckerTest {
             replicaConfig, mockObjectStorage, null);
 
         // Mock successful connectivity
-        when(mockObjectStorage.list(anyString(), anyString(), anyInt(), isNull()))
+        when(mockObjectStorage.list(anyString()))
             .thenReturn(CompletableFuture.completedFuture(java.util.List.of()));
 
         HealthCheckResult result = noMetricsChecker.check().get(5, TimeUnit.SECONDS);
@@ -306,7 +303,7 @@ public class ReplicaHealthCheckerTest {
         replicaMetrics.recordRead(true, 9000);
 
         // Mock successful connectivity
-        when(mockObjectStorage.list(anyString(), anyString(), anyInt(), isNull()))
+        when(mockObjectStorage.list(anyString()))
             .thenReturn(CompletableFuture.completedFuture(java.util.List.of()));
 
         HealthCheckResult result = healthChecker.check().get(5, TimeUnit.SECONDS);

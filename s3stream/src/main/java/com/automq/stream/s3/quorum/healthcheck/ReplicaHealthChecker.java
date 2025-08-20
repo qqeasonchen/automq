@@ -19,7 +19,7 @@
 
 package com.automq.stream.s3.quorum.healthcheck;
 
-import com.automq.stream.s3.ObjectStorage;
+import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.s3.quorum.config.ReplicaConfig;
 import com.automq.stream.s3.quorum.metrics.ReplicaMetrics;
 
@@ -155,15 +155,19 @@ public class ReplicaHealthChecker implements HealthCheck {
         // This is a minimal operation that tests S3 endpoint reachability
         try {
             // Use a simple list operation as connectivity test
-            return objectStorage.list(replicaConfig.getBucket(), "", 1, null)
-                .thenApply(listResult -> {
-                    LOGGER.debug("Connectivity check passed for replica {}", replicaConfig.getReplicaId());
-                    return null;
-                })
-                .exceptionally(throwable -> {
-                    LOGGER.warn("Connectivity check failed for replica {}", replicaConfig.getReplicaId(), throwable);
-                    throw new RuntimeException("Connectivity check failed: " + throwable.getMessage(), throwable);
+            CompletableFuture<Void> connectivityFuture = new CompletableFuture<>();
+            objectStorage.list("")
+                .whenComplete((listResult, throwable) -> {
+                    if (throwable != null) {
+                        LOGGER.warn("Connectivity check failed for replica {}", replicaConfig.getReplicaId(), throwable);
+                        connectivityFuture.completeExceptionally(
+                            new RuntimeException("Connectivity check failed: " + throwable.getMessage(), throwable));
+                    } else {
+                        LOGGER.debug("Connectivity check passed for replica {}", replicaConfig.getReplicaId());
+                        connectivityFuture.complete(null);
+                    }
                 });
+            return connectivityFuture;
         } catch (Exception e) {
             LOGGER.warn("Connectivity check exception for replica {}", replicaConfig.getReplicaId(), e);
             return CompletableFuture.failedFuture(e);
