@@ -38,6 +38,9 @@ import com.automq.stream.s3.quorum.reader.QuorumReadOperation;
 import com.automq.stream.s3.quorum.reader.QuorumReadOperation.ReadStrategy;
 import com.automq.stream.s3.quorum.failover.FailureDetector;
 import com.automq.stream.s3.quorum.failover.RecoveryManager;
+import com.automq.stream.s3.quorum.failover.ReplicaFailureState;
+import com.automq.stream.s3.quorum.metrics.QuorumMetrics;
+import com.automq.stream.s3.quorum.metrics.MetricsCollector;
 import com.automq.stream.utils.FutureUtil;
 
 import io.netty.buffer.ByteBuf;
@@ -65,6 +68,8 @@ public class S3QuorumStorage implements Storage {
     private final QuorumReadOperation readOperation;
     private final FailureDetector failureDetector;
     private final RecoveryManager recoveryManager;
+    private final QuorumMetrics metrics;
+    private final MetricsCollector metricsCollector;
     private final AtomicLong writeSequence = new AtomicLong(0);
     
     public S3QuorumStorage(QuorumConfig config, List<Storage> replicas) {
@@ -92,8 +97,15 @@ public class S3QuorumStorage implements Storage {
         this.failureDetector = new FailureDetector(config, quorumState);
         this.recoveryManager = new RecoveryManager(config, quorumState, replicas);
         
+        // Initialize metrics system
+        this.metrics = new QuorumMetrics(config);
+        this.metricsCollector = new MetricsCollector(metrics, quorumState);
+        
         // Connect failure detector to recovery manager
         this.failureDetector.addListener(recoveryManager);
+        
+        // Connect failure detector to metrics
+        this.failureDetector.addListener(new FailureDetectorMetricsAdapter());
     }
     
     /**
@@ -127,6 +139,7 @@ public class S3QuorumStorage implements Storage {
         quorumState.startup();
         failureDetector.start();
         recoveryManager.start();
+        metricsCollector.start();
         
         LOGGER.info("S3QuorumStorage startup completed with {} replicas", replicas.size());
     }
@@ -135,7 +148,8 @@ public class S3QuorumStorage implements Storage {
     public void shutdown() {
         LOGGER.info("Shutting down S3QuorumStorage");
         
-        // Stop failure detection and recovery first
+        // Stop metrics collection and failure detection first
+        metricsCollector.stop();
         recoveryManager.stop();
         failureDetector.stop();
         
@@ -156,10 +170,17 @@ public class S3QuorumStorage implements Storage {
     @Override
     public CompletableFuture<Void> append(AppendContext context, StreamRecordBatch streamRecord) {
         long sequence = writeSequence.incrementAndGet();
+        long startTime = System.currentTimeMillis();
+        
         LOGGER.debug("Starting quorum append with sequence {} for stream {}", sequence, streamRecord.getStreamId());
+        
+        // Record write request
+        metrics.recordWriteRequest();
         
         // Check if quorum is available
         if (!quorumState.hasQuorum()) {
+            long latency = System.currentTimeMillis() - startTime;
+            metrics.recordWriteFailure(latency);
             return CompletableFuture.failedFuture(
                 new IllegalStateException("Quorum not available for write operation"));
         }
@@ -168,25 +189,37 @@ public class S3QuorumStorage implements Storage {
         List<StreamRecordBatch> batches = List.of(streamRecord);
         return writeOperation.writeToQuorum(batches)
             .thenApply(writeResult -> {
+                long latency = System.currentTimeMillis() - startTime;
+                long bytes = streamRecord.encoded().readableBytes();
+                
                 if (writeResult.isSuccess()) {
                     LOGGER.debug("Quorum write completed successfully for sequence {} with {} successful writes", 
                                sequence, writeResult.getSuccessfulWrites());
                     
-                    // Record successes and failures with failure detector
+                    // Record successful write metrics
+                    metrics.recordWriteSuccess(latency, bytes);
+                    
+                    // Record successes and failures with failure detector and per-replica metrics
                     for (var replicaResult : writeResult.getReplicaResults()) {
                         if (replicaResult.isSuccess()) {
                             failureDetector.recordSuccess(replicaResult.getReplicaIndex());
+                            metrics.recordReplicaWrite(replicaResult.getReplicaIndex(), true, latency);
                         } else if (replicaResult.getException() != null) {
                             failureDetector.recordFailure(replicaResult.getReplicaIndex(), replicaResult.getException());
+                            metrics.recordReplicaWrite(replicaResult.getReplicaIndex(), false, latency);
                         }
                     }
                     
                     return null;
                 } else {
+                    // Record failed write metrics
+                    metrics.recordWriteFailure(latency);
+                    
                     // Record failures for all replicas that failed
                     for (var replicaResult : writeResult.getReplicaResults()) {
                         if (!replicaResult.isSuccess() && replicaResult.getException() != null) {
                             failureDetector.recordFailure(replicaResult.getReplicaIndex(), replicaResult.getException());
+                            metrics.recordReplicaWrite(replicaResult.getReplicaIndex(), false, latency);
                         }
                     }
                     throw new RuntimeException("Quorum write failed: " + writeResult.getFailures());
@@ -196,10 +229,17 @@ public class S3QuorumStorage implements Storage {
 
     @Override
     public CompletableFuture<ReadDataBlock> read(FetchContext context, long streamId, long startOffset, long endOffset, int maxBytes) {
+        long startTime = System.currentTimeMillis();
+        
         LOGGER.debug("Starting read operation for stream {} with range [{}, {})", streamId, startOffset, endOffset);
+        
+        // Record read request
+        metrics.recordReadRequest();
         
         // Check if quorum is available
         if (!quorumState.hasQuorum()) {
+            long latency = System.currentTimeMillis() - startTime;
+            metrics.recordReadFailure(latency);
             return CompletableFuture.failedFuture(
                 new IllegalStateException("Quorum not available for read operation"));
         }
@@ -210,16 +250,25 @@ public class S3QuorumStorage implements Storage {
         // Use new QuorumReadOperation
         return readOperation.readFromQuorum(context, streamId, startOffset, endOffset, maxBytes, strategy)
             .thenApply(readResult -> {
+                long latency = System.currentTimeMillis() - startTime;
+                long bytes = readResult.getData() != null && readResult.getData().getRecords() != null ? 
+                    readResult.getData().getRecords().size() * 100 : 0; // Estimate bytes
+                
                 if (readResult.isSuccess()) {
                     LOGGER.debug("Quorum read completed successfully for stream {} with {} successful reads", 
                                streamId, readResult.getSuccessfulReads());
                     
-                    // Record successes and failures with failure detector
+                    // Record successful read metrics
+                    metrics.recordReadSuccess(latency, bytes);
+                    
+                    // Record successes and failures with failure detector and per-replica metrics
                     for (var replicaResult : readResult.getReplicaResults()) {
                         if (replicaResult.isSuccess()) {
                             failureDetector.recordSuccess(replicaResult.getReplicaIndex());
+                            metrics.recordReplicaRead(replicaResult.getReplicaIndex(), true, latency);
                         } else if (replicaResult.getException() != null) {
                             failureDetector.recordFailure(replicaResult.getReplicaIndex(), replicaResult.getException());
+                            metrics.recordReplicaRead(replicaResult.getReplicaIndex(), false, latency);
                         }
                     }
                     
@@ -230,10 +279,14 @@ public class S3QuorumStorage implements Storage {
                     
                     return readResult.getData();
                 } else {
+                    // Record failed read metrics
+                    metrics.recordReadFailure(latency);
+                    
                     // Record failures for all replicas that failed
                     for (var replicaResult : readResult.getReplicaResults()) {
                         if (!replicaResult.isSuccess() && replicaResult.getException() != null) {
                             failureDetector.recordFailure(replicaResult.getReplicaIndex(), replicaResult.getException());
+                            metrics.recordReplicaRead(replicaResult.getReplicaIndex(), false, latency);
                         }
                     }
                     throw new RuntimeException("Quorum read failed: " + readResult.getFailures());
@@ -495,6 +548,34 @@ public class S3QuorumStorage implements Storage {
         }
         return status;
     }
+    
+    /**
+     * Get quorum metrics
+     */
+    public QuorumMetrics getMetrics() {
+        return metrics;
+    }
+    
+    /**
+     * Get metrics collector
+     */
+    public MetricsCollector getMetricsCollector() {
+        return metricsCollector;
+    }
+    
+    /**
+     * Add a metrics listener
+     */
+    public void addMetricsListener(MetricsCollector.MetricsListener listener) {
+        metricsCollector.addListener(listener);
+    }
+    
+    /**
+     * Remove a metrics listener
+     */
+    public void removeMetricsListener(MetricsCollector.MetricsListener listener) {
+        metricsCollector.removeListener(listener);
+    }
 
     /**
      * Reset failure counts for all replicas
@@ -574,6 +655,39 @@ public class S3QuorumStorage implements Storage {
         @Override
         public void close() {
             // No-op
+        }
+    }
+    
+    /**
+     * Adapter to connect FailureDetector events to metrics system
+     */
+    private class FailureDetectorMetricsAdapter implements FailureDetector.FailureDetectorListener {
+        
+        @Override
+        public void onReplicaFailed(int replicaId, ReplicaFailureState state) {
+            metrics.recordReplicaFailure(replicaId);
+        }
+        
+        @Override
+        public void onReplicaRecovered(int replicaId, ReplicaFailureState state) {
+            metrics.recordReplicaRecovery(replicaId);
+        }
+        
+        @Override
+        public void onQuorumLost(FailureDetector.FailureType type) {
+            metrics.recordQuorumLoss();
+        }
+        
+        @Override
+        public void onQuorumAtRisk(int healthyReplicas, int totalReplicas) {
+            // Update health metrics
+            metrics.updateQuorumHealth(healthyReplicas, healthyReplicas >= config.getWriteQuorumSize());
+        }
+        
+        @Override
+        public void onQuorumHealthy() {
+            // Update health metrics
+            metrics.updateQuorumHealth(config.getQuorumSize(), true);
         }
     }
 } 
