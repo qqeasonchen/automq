@@ -128,7 +128,7 @@ public class QuorumState {
     }
 
     public boolean hasQuorum() {
-        return healthyReplicaCount.get() >= (quorumSize / 2 + 1);
+        return started && healthyReplicaCount.get() >= (quorumSize / 2 + 1);
     }
 
     public int[] getHealthyReplicaIndices() {
