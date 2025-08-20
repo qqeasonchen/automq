@@ -262,43 +262,81 @@ public class ReplicaMetrics {
     }
     
     /**
+     * Record successful repair operation
+     */
+    public void recordRepairSuccess() {
+        recoveryCount.incrementAndGet();
+        lastRecoveryTime.set(System.currentTimeMillis());
+        consecutiveFailures.set(0);
+        consecutiveSuccesses.incrementAndGet();
+        markAsHealthy();
+    }
+    
+    /**
+     * Record failed repair operation
+     */
+    public void recordRepairFailure() {
+        failureCount.incrementAndGet();
+        lastFailureTime.set(System.currentTimeMillis());
+        consecutiveSuccesses.set(0);
+        consecutiveFailures.incrementAndGet();
+        updateHealthState(false);
+    }
+    
+    /**
+     * Mark replica as healthy
+     */
+    public void markAsHealthy() {
+        if (!isHealthy) {
+            updateHealthState(true);
+        }
+    }
+    
+    /**
+     * Mark replica as unhealthy  
+     */
+    public void markAsUnhealthy() {
+        if (isHealthy) {
+            updateHealthState(false);
+        }
+    }
+    
+    /**
      * Get replica metrics snapshot
      */
     public ReplicaMetricsSnapshot getSnapshot() {
-        return new ReplicaMetricsSnapshot(
-            replicaId,
-            
-            // Write metrics
-            getWriteRequestsTotal(),
-            getWriteRequestsSuccessful(),
-            getWriteRequestsFailed(),
-            getWriteSuccessRate(),
-            getWriteAverageLatency(),
-            
-            // Read metrics
-            getReadRequestsTotal(),
-            getReadRequestsSuccessful(),
-            getReadRequestsFailed(),
-            getReadSuccessRate(),
-            getReadAverageLatency(),
-            
-            // Health metrics
-            isHealthy(),
-            getFailureCount(),
-            getRecoveryCount(),
-            getConsecutiveFailures(),
-            getConsecutiveSuccesses(),
-            getUptimeRatio(),
-            getTimeSinceLastFailure(),
-            getTimeSinceLastRecovery(),
-            
-            // Overall metrics
-            getOverallSuccessRate(),
-            getOverallAverageLatency(),
-            
-            // Timestamp
-            System.currentTimeMillis()
-        );
+        return ReplicaMetricsSnapshot.builder()
+            .replicaId(replicaId)
+            .writeMetrics(
+                getWriteRequestsTotal(),
+                getWriteRequestsSuccessful(),
+                getWriteRequestsFailed(),
+                getWriteSuccessRate(),
+                getWriteAverageLatency()
+            )
+            .readMetrics(
+                getReadRequestsTotal(),
+                getReadRequestsSuccessful(),
+                getReadRequestsFailed(),
+                getReadSuccessRate(),
+                getReadAverageLatency()
+            )
+            .healthMetrics(
+                isHealthy(),
+                getFailureCount(),
+                getRecoveryCount(),
+                getConsecutiveFailures(),
+                getConsecutiveSuccesses(),
+                getUptimeRatio(),
+                getTimeSinceLastFailure(),
+                getTimeSinceLastRecovery()
+            )
+            .overallMetrics(
+                getOverallSuccessRate(),
+                getOverallAverageLatency()
+            )
+            .timestamp(System.currentTimeMillis())
+            .build();
     }
     
     /**

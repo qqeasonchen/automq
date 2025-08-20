@@ -19,7 +19,6 @@
 
 package com.automq.stream.s3.quorum.metrics;
 
-import com.automq.stream.s3.quorum.config.QuorumConfig;
 import com.automq.stream.s3.quorum.state.QuorumState;
 
 import org.slf4j.Logger;
@@ -242,8 +241,8 @@ public class MetricsCollector {
     private boolean shouldLogSummary(MetricsSnapshot snapshot) {
         // Log summary every 10 collections or if there are failures
         return (snapshot.getTotalRequests() % 100 == 0) ||
-               (snapshot.getTotalFailedRequests() > 0) ||
-               (!snapshot.isHealthy());
+               ((snapshot.getWriteRequestsFailed() + snapshot.getReadRequestsFailed()) > 0) ||
+               (snapshot.getHealthScore() < 0.8);
     }
     
     /**
@@ -283,7 +282,7 @@ public class MetricsCollector {
         
         @Override
         public void onMetricsCollected(MetricsSnapshot snapshot) {
-            boolean currentHealth = snapshot.isHealthy();
+            boolean currentHealth = snapshot.getHealthScore() > 0.8;
             
             // Check for health status changes
             if (lastHealthStatus != null && lastHealthStatus != currentHealth) {

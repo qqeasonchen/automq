@@ -21,11 +21,10 @@ package com.automq.stream.s3.quorum.metrics;
 
 /**
  * Immutable snapshot of QuorumMetrics at a specific point in time
- * Provides a consistent view of all metrics for reporting and monitoring
  */
 public class MetricsSnapshot {
     
-    // Write operation metrics
+    // Write metrics
     private final long writeRequestsTotal;
     private final long writeRequestsSuccessful;
     private final long writeRequestsFailed;
@@ -33,7 +32,7 @@ public class MetricsSnapshot {
     private final double writeAverageLatency;
     private final long writeBytesTotal;
     
-    // Read operation metrics
+    // Read metrics
     private final long readRequestsTotal;
     private final long readRequestsSuccessful;
     private final long readRequestsFailed;
@@ -56,41 +55,39 @@ public class MetricsSnapshot {
     // Metadata
     private final long timestamp;
     
-    public MetricsSnapshot(long writeRequestsTotal, long writeRequestsSuccessful, long writeRequestsFailed,
-                          double writeSuccessRate, double writeAverageLatency, long writeBytesTotal,
-                          long readRequestsTotal, long readRequestsSuccessful, long readRequestsFailed,
-                          double readSuccessRate, double readAverageLatency, long readBytesTotal,
-                          long healthyReplicas, long totalReplicas, double quorumHealthRatio,
-                          double quorumAvailability, long replicaFailuresTotal, long replicaRecoveriesTotal,
-                          long emergencyRecoveriesTotal, long quorumLossEvents, long timestamp) {
-        this.writeRequestsTotal = writeRequestsTotal;
-        this.writeRequestsSuccessful = writeRequestsSuccessful;
-        this.writeRequestsFailed = writeRequestsFailed;
-        this.writeSuccessRate = writeSuccessRate;
-        this.writeAverageLatency = writeAverageLatency;
-        this.writeBytesTotal = writeBytesTotal;
+    private MetricsSnapshot(Builder builder) {
+        this.writeRequestsTotal = builder.writeRequestsTotal;
+        this.writeRequestsSuccessful = builder.writeRequestsSuccessful;
+        this.writeRequestsFailed = builder.writeRequestsFailed;
+        this.writeSuccessRate = builder.writeSuccessRate;
+        this.writeAverageLatency = builder.writeAverageLatency;
+        this.writeBytesTotal = builder.writeBytesTotal;
         
-        this.readRequestsTotal = readRequestsTotal;
-        this.readRequestsSuccessful = readRequestsSuccessful;
-        this.readRequestsFailed = readRequestsFailed;
-        this.readSuccessRate = readSuccessRate;
-        this.readAverageLatency = readAverageLatency;
-        this.readBytesTotal = readBytesTotal;
+        this.readRequestsTotal = builder.readRequestsTotal;
+        this.readRequestsSuccessful = builder.readRequestsSuccessful;
+        this.readRequestsFailed = builder.readRequestsFailed;
+        this.readSuccessRate = builder.readSuccessRate;
+        this.readAverageLatency = builder.readAverageLatency;
+        this.readBytesTotal = builder.readBytesTotal;
         
-        this.healthyReplicas = healthyReplicas;
-        this.totalReplicas = totalReplicas;
-        this.quorumHealthRatio = quorumHealthRatio;
-        this.quorumAvailability = quorumAvailability;
+        this.healthyReplicas = builder.healthyReplicas;
+        this.totalReplicas = builder.totalReplicas;
+        this.quorumHealthRatio = builder.quorumHealthRatio;
+        this.quorumAvailability = builder.quorumAvailability;
         
-        this.replicaFailuresTotal = replicaFailuresTotal;
-        this.replicaRecoveriesTotal = replicaRecoveriesTotal;
-        this.emergencyRecoveriesTotal = emergencyRecoveriesTotal;
-        this.quorumLossEvents = quorumLossEvents;
+        this.replicaFailuresTotal = builder.replicaFailuresTotal;
+        this.replicaRecoveriesTotal = builder.replicaRecoveriesTotal;
+        this.emergencyRecoveriesTotal = builder.emergencyRecoveriesTotal;
+        this.quorumLossEvents = builder.quorumLossEvents;
         
-        this.timestamp = timestamp;
+        this.timestamp = builder.timestamp;
     }
     
-    // Write metrics getters
+    public static Builder builder() {
+        return new Builder();
+    }
+    
+    // Getters
     public long getWriteRequestsTotal() {
         return writeRequestsTotal;
     }
@@ -115,7 +112,6 @@ public class MetricsSnapshot {
         return writeBytesTotal;
     }
     
-    // Read metrics getters
     public long getReadRequestsTotal() {
         return readRequestsTotal;
     }
@@ -140,7 +136,6 @@ public class MetricsSnapshot {
         return readBytesTotal;
     }
     
-    // Health metrics getters
     public long getHealthyReplicas() {
         return healthyReplicas;
     }
@@ -157,7 +152,6 @@ public class MetricsSnapshot {
         return quorumAvailability;
     }
     
-    // Failure metrics getters
     public long getReplicaFailuresTotal() {
         return replicaFailuresTotal;
     }
@@ -174,7 +168,6 @@ public class MetricsSnapshot {
         return quorumLossEvents;
     }
     
-    // Metadata getters
     public long getTimestamp() {
         return timestamp;
     }
@@ -184,137 +177,207 @@ public class MetricsSnapshot {
         return writeRequestsTotal + readRequestsTotal;
     }
     
+    public long getTotalBytes() {
+        return writeBytesTotal + readBytesTotal;
+    }
+    
+    public long getTotalBytesProcessed() {
+        return getTotalBytes();
+    }
+    
     public long getTotalSuccessfulRequests() {
         return writeRequestsSuccessful + readRequestsSuccessful;
     }
     
-    public long getTotalFailedRequests() {
-        return writeRequestsFailed + readRequestsFailed;
+    public boolean isHealthy() {
+        return getHealthScore() > 0.8;
+    }
+    
+    public String getHealthStatus() {
+        double score = getHealthScore();
+        if (score >= 0.9) {
+            return "HEALTHY";
+        } else if (score >= 0.7) {
+            return "DEGRADED";
+        } else {
+            return "UNHEALTHY";
+        }
+    }
+    
+    public String toDetailedString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== Quorum Metrics Summary ===\n");
+        sb.append(String.format("Health Score: %.2f (%s)\n", getHealthScore(), getHealthStatus()));
+        sb.append(String.format("Availability: %.1f%%\n\n", quorumAvailability * 100));
+        
+        sb.append("Operations:\n");
+        sb.append(String.format("  Total Requests: %d (Successful: %d, Failed: %d)\n",
+                                getTotalRequests(), getTotalSuccessfulRequests(),
+                                writeRequestsFailed + readRequestsFailed));
+        sb.append(String.format("  Overall Success Rate: %.2f%%\n", getOverallSuccessRate() * 100));
+        sb.append(String.format("  Average Latency: %.2f ms\n\n", getOverallAverageLatency()));
+        
+        sb.append("Write Operations:\n");
+        sb.append(String.format("  Total: %d, Success: %d, Failed: %d\n",
+                                writeRequestsTotal, writeRequestsSuccessful, writeRequestsFailed));
+        sb.append(String.format("  Success Rate: %.2f%%, Avg Latency: %.2f ms\n",
+                                writeSuccessRate * 100, writeAverageLatency));
+        sb.append(String.format("  Bytes Written: %d\n\n", writeBytesTotal));
+        
+        sb.append("Read Operations:\n");
+        sb.append(String.format("  Total: %d, Success: %d, Failed: %d\n",
+                                readRequestsTotal, readRequestsSuccessful, readRequestsFailed));
+        sb.append(String.format("  Success Rate: %.2f%%, Avg Latency: %.2f ms\n",
+                                readSuccessRate * 100, readAverageLatency));
+        sb.append(String.format("  Bytes Read: %d\n\n", readBytesTotal));
+        
+        sb.append("Quorum Health:\n");
+        sb.append(String.format("  Healthy Replicas: %d/%d (%.1f%%)\n",
+                                healthyReplicas, totalReplicas, quorumHealthRatio * 100));
+        sb.append(String.format("  Failures: %d, Recoveries: %d\n",
+                                replicaFailuresTotal, replicaRecoveriesTotal));
+        sb.append(String.format("  Emergency Recoveries: %d, Quorum Loss Events: %d\n",
+                                emergencyRecoveriesTotal, quorumLossEvents));
+        
+        sb.append(String.format("\nTimestamp: %d", timestamp));
+        return sb.toString();
     }
     
     public double getOverallSuccessRate() {
-        long total = getTotalRequests();
-        return total > 0 ? (double) getTotalSuccessfulRequests() / total : 0.0;
+        long totalRequests = getTotalRequests();
+        if (totalRequests == 0) {
+            return 0.0;
+        }
+        long totalSuccessful = writeRequestsSuccessful + readRequestsSuccessful;
+        return (double) totalSuccessful / totalRequests;
     }
     
     public double getOverallAverageLatency() {
-        // Weighted average based on request counts
-        long writeCount = writeRequestsTotal;
-        long readCount = readRequestsTotal;
-        long totalCount = writeCount + readCount;
+        long totalRequests = getTotalRequests();
+        if (totalRequests == 0) {
+            return 0.0;
+        }
+        double totalLatency = (writeAverageLatency * writeRequestsTotal) + 
+                             (readAverageLatency * readRequestsTotal);
+        return totalLatency / totalRequests;
+    }
+    
+    public double getFailureRecoveryRatio() {
+        if (replicaFailuresTotal == 0) {
+            return 1.0;
+        }
+        return (double) replicaRecoveriesTotal / replicaFailuresTotal;
+    }
+    
+    /**
+     * Get overall health score (0.0 to 1.0)
+     */
+    public double getHealthScore() {
+        double quorumHealthWeight = 0.4;
+        double successRateWeight = 0.3;
+        double availabilityWeight = 0.2;
+        double recoveryWeight = 0.1;
         
-        if (totalCount == 0) {
-            return 0.0;
-        }
+        double successRateScore = getOverallSuccessRate();
+        double recoveryScore = getFailureRecoveryRatio();
         
-        double weightedLatency = (writeAverageLatency * writeCount) + (readAverageLatency * readCount);
-        return weightedLatency / totalCount;
-    }
-    
-    public long getTotalBytesProcessed() {
-        return writeBytesTotal + readBytesTotal;
-    }
-    
-    /**
-     * Get throughput in requests per second
-     * Note: This requires time window information for accurate calculation
-     */
-    public double getRequestThroughput(long timeWindowMs) {
-        if (timeWindowMs <= 0) {
-            return 0.0;
-        }
-        return (double) getTotalRequests() / (timeWindowMs / 1000.0);
-    }
-    
-    /**
-     * Get throughput in bytes per second
-     */
-    public double getByteThroughput(long timeWindowMs) {
-        if (timeWindowMs <= 0) {
-            return 0.0;
-        }
-        return (double) getTotalBytesProcessed() / (timeWindowMs / 1000.0);
-    }
-    
-    /**
-     * Check if system is operating normally
-     */
-    public boolean isHealthy() {
-        return quorumHealthRatio >= 0.67 && // At least 2/3 replicas healthy
-               getOverallSuccessRate() >= 0.95 && // At least 95% success rate
-               quorumAvailability >= 0.99; // At least 99% availability
-    }
-    
-    /**
-     * Get health status summary
-     */
-    public String getHealthStatus() {
-        if (quorumLossEvents > 0) {
-            return "CRITICAL - Quorum loss detected";
-        } else if (quorumHealthRatio < 0.5) {
-            return "CRITICAL - Majority replicas unhealthy";
-        } else if (quorumHealthRatio < 0.67) {
-            return "WARNING - Reduced replica availability";
-        } else if (getOverallSuccessRate() < 0.95) {
-            return "WARNING - High error rate";
-        } else if (quorumAvailability < 0.99) {
-            return "WARNING - Reduced availability";
-        } else {
-            return "HEALTHY";
-        }
+        return (quorumHealthRatio * quorumHealthWeight) +
+               (successRateScore * successRateWeight) +
+               (quorumAvailability * availabilityWeight) +
+               (recoveryScore * recoveryWeight);
     }
     
     @Override
     public String toString() {
         return String.format(
-            "MetricsSnapshot{" +
-            "writes=%d/%d(%.1f%%), reads=%d/%d(%.1f%%), " +
-            "replicas=%d/%d(%.1f%%), availability=%.1f%%, " +
-            "failures=%d, recoveries=%d, status=%s, ts=%d}",
-            writeRequestsSuccessful, writeRequestsTotal, writeSuccessRate * 100,
-            readRequestsSuccessful, readRequestsTotal, readSuccessRate * 100,
-            healthyReplicas, totalReplicas, quorumHealthRatio * 100,
+            "MetricsSnapshot{requests=%d/%d(%.1f%%), quorum=%d/%d(%.1f%%), " +
+            "health=%.2f, availability=%.1f%%, failures=%d, recoveries=%d}",
+            writeRequestsSuccessful + readRequestsSuccessful,
+            getTotalRequests(),
+            getOverallSuccessRate() * 100,
+            healthyReplicas,
+            totalReplicas,
+            quorumHealthRatio * 100,
+            getHealthScore(),
             quorumAvailability * 100,
-            replicaFailuresTotal, replicaRecoveriesTotal,
-            getHealthStatus(),
-            timestamp
+            replicaFailuresTotal,
+            replicaRecoveriesTotal
         );
     }
     
     /**
-     * Format metrics for human-readable display
+     * Builder pattern for MetricsSnapshot
      */
-    public String toDetailedString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("=== S3 Quorum Storage Metrics ===\n");
-        sb.append(String.format("Timestamp: %d\n", timestamp));
-        sb.append(String.format("Status: %s\n\n", getHealthStatus()));
+    public static class Builder {
+        private long writeRequestsTotal;
+        private long writeRequestsSuccessful;
+        private long writeRequestsFailed;
+        private double writeSuccessRate;
+        private double writeAverageLatency;
+        private long writeBytesTotal;
+        private long readRequestsTotal;
+        private long readRequestsSuccessful;
+        private long readRequestsFailed;
+        private double readSuccessRate;
+        private double readAverageLatency;
+        private long readBytesTotal;
+        private long healthyReplicas;
+        private long totalReplicas;
+        private double quorumHealthRatio;
+        private double quorumAvailability;
+        private long replicaFailuresTotal;
+        private long replicaRecoveriesTotal;
+        private long emergencyRecoveriesTotal;
+        private long quorumLossEvents;
+        private long timestamp;
         
-        sb.append("Write Operations:\n");
-        sb.append(String.format("  Total: %d, Successful: %d, Failed: %d\n", 
-                                writeRequestsTotal, writeRequestsSuccessful, writeRequestsFailed));
-        sb.append(String.format("  Success Rate: %.2f%%, Average Latency: %.2f ms\n", 
-                                writeSuccessRate * 100, writeAverageLatency));
-        sb.append(String.format("  Total Bytes: %d\n\n", writeBytesTotal));
+        public Builder writeMetrics(long total, long successful, long failed,
+                                  double successRate, double avgLatency, long bytes) {
+            this.writeRequestsTotal = total;
+            this.writeRequestsSuccessful = successful;
+            this.writeRequestsFailed = failed;
+            this.writeSuccessRate = successRate;
+            this.writeAverageLatency = avgLatency;
+            this.writeBytesTotal = bytes;
+            return this;
+        }
         
-        sb.append("Read Operations:\n");
-        sb.append(String.format("  Total: %d, Successful: %d, Failed: %d\n", 
-                                readRequestsTotal, readRequestsSuccessful, readRequestsFailed));
-        sb.append(String.format("  Success Rate: %.2f%%, Average Latency: %.2f ms\n", 
-                                readSuccessRate * 100, readAverageLatency));
-        sb.append(String.format("  Total Bytes: %d\n\n", readBytesTotal));
+        public Builder readMetrics(long total, long successful, long failed,
+                                 double successRate, double avgLatency, long bytes) {
+            this.readRequestsTotal = total;
+            this.readRequestsSuccessful = successful;
+            this.readRequestsFailed = failed;
+            this.readSuccessRate = successRate;
+            this.readAverageLatency = avgLatency;
+            this.readBytesTotal = bytes;
+            return this;
+        }
         
-        sb.append("Quorum Health:\n");
-        sb.append(String.format("  Healthy Replicas: %d/%d (%.1f%%)\n", 
-                                healthyReplicas, totalReplicas, quorumHealthRatio * 100));
-        sb.append(String.format("  Availability: %.2f%%\n\n", quorumAvailability * 100));
+        public Builder healthMetrics(long healthy, long total, double healthRatio, 
+                                   double availability) {
+            this.healthyReplicas = healthy;
+            this.totalReplicas = total;
+            this.quorumHealthRatio = healthRatio;
+            this.quorumAvailability = availability;
+            return this;
+        }
         
-        sb.append("Failure Recovery:\n");
-        sb.append(String.format("  Replica Failures: %d, Recoveries: %d\n", 
-                                replicaFailuresTotal, replicaRecoveriesTotal));
-        sb.append(String.format("  Emergency Recoveries: %d, Quorum Loss Events: %d\n", 
-                                emergencyRecoveriesTotal, quorumLossEvents));
+        public Builder failureMetrics(long failures, long recoveries, 
+                                    long emergencyRecoveries, long quorumLoss) {
+            this.replicaFailuresTotal = failures;
+            this.replicaRecoveriesTotal = recoveries;
+            this.emergencyRecoveriesTotal = emergencyRecoveries;
+            this.quorumLossEvents = quorumLoss;
+            return this;
+        }
         
-        return sb.toString();
+        public Builder timestamp(long timestamp) {
+            this.timestamp = timestamp;
+            return this;
+        }
+        
+        public MetricsSnapshot build() {
+            return new MetricsSnapshot(this);
+        }
     }
 }
