@@ -114,8 +114,20 @@ public class RecordAccumulator implements Closeable {
     }
 
     public void start() {
-        // Verify the permission.
+        // First try to verify the permission. If verification fails, acquire permission and try again.
         reservationService.verify(config.nodeId(), config.epoch(), config.failover())
+            .thenCompose(result -> {
+                if (!result) {
+                    // Permission verification failed, try to acquire permission first
+                    return reservationService.acquire(config.nodeId(), config.epoch(), config.failover())
+                        .thenCompose(unused -> {
+                            // After acquiring, verify again
+                            return reservationService.verify(config.nodeId(), config.epoch(), config.failover());
+                        });
+                } else {
+                    return CompletableFuture.completedFuture(result);
+                }
+            })
             .thenAccept(result -> {
                 if (!result) {
                     fenced = true;
