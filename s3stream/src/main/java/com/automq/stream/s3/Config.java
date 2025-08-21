@@ -63,6 +63,16 @@ public class Config {
     private Supplier<Version> version = () -> {
         throw new UnsupportedOperationException();
     };
+    
+    // S3 Quorum configuration
+    private boolean quorumEnabled = false;
+    private int quorumSize = 3;
+    private int writeQuorumSize = 2;
+    private int readQuorumSize = 1;
+    private long writeTimeoutMs = 15000;
+    private long readTimeoutMs = 5000;
+    private boolean readRepairEnabled = true;
+    private long readRepairTimeoutMs = 2000;
 
     public int nodeId() {
         return nodeId;
@@ -341,5 +351,79 @@ public class Config {
 
     public Version version() {
         return version.get();
+    }
+
+    // S3 Quorum getter methods
+    public boolean quorumEnabled() {
+        return quorumEnabled;
+    }
+
+    public int quorumSize() {
+        return quorumSize;
+    }
+
+    public int writeQuorumSize() {
+        return writeQuorumSize;
+    }
+
+    public int readQuorumSize() {
+        return readQuorumSize;
+    }
+
+    public long writeTimeoutMs() {
+        return writeTimeoutMs;
+    }
+
+    public long readTimeoutMs() {
+        return readTimeoutMs;
+    }
+
+    public boolean readRepairEnabled() {
+        return readRepairEnabled;
+    }
+
+    public long readRepairTimeoutMs() {
+        return readRepairTimeoutMs;
+    }
+
+    // S3 Quorum setter methods
+    public Config quorumEnabled(boolean quorumEnabled) {
+        this.quorumEnabled = quorumEnabled;
+        return this;
+    }
+
+    public Config quorumSize(int quorumSize) {
+        this.quorumSize = quorumSize;
+        return this;
+    }
+
+    public Config writeQuorumSize(int writeQuorumSize) {
+        this.writeQuorumSize = writeQuorumSize;
+        return this;
+    }
+
+    public Config readQuorumSize(int readQuorumSize) {
+        this.readQuorumSize = readQuorumSize;
+        return this;
+    }
+
+    public Config writeTimeoutMs(long writeTimeoutMs) {
+        this.writeTimeoutMs = writeTimeoutMs;
+        return this;
+    }
+
+    public Config readTimeoutMs(long readTimeoutMs) {
+        this.readTimeoutMs = readTimeoutMs;
+        return this;
+    }
+
+    public Config readRepairEnabled(boolean readRepairEnabled) {
+        this.readRepairEnabled = readRepairEnabled;
+        return this;
+    }
+
+    public Config readRepairTimeoutMs(long readRepairTimeoutMs) {
+        this.readRepairTimeoutMs = readRepairTimeoutMs;
+        return this;
     }
 }

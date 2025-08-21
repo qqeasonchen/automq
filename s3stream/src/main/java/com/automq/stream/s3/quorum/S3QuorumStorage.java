@@ -54,6 +54,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -64,6 +65,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class S3QuorumStorage implements Storage {
     private static final Logger LOGGER = LoggerFactory.getLogger(S3QuorumStorage.class);
+    private static final Random RANDOM = new Random();
     
     private final QuorumConfig config;
     private final List<Storage> replicas;
@@ -918,7 +920,7 @@ public class S3QuorumStorage implements Storage {
             return CompletableFuture.supplyAsync(() -> {
                 try {
                     // Simulate write latency
-                    Thread.sleep(10 + (int) (Math.random() * 50));
+                    Thread.sleep(10 + RANDOM.nextInt(50));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException(e);
@@ -1038,7 +1040,7 @@ public class S3QuorumStorage implements Storage {
             return CompletableFuture.supplyAsync(() -> {
                 // Simulate write latency
                 try {
-                    Thread.sleep(10 + (int) (Math.random() * 50));
+                    Thread.sleep(10 + RANDOM.nextInt(50));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException(e);
@@ -1086,7 +1088,7 @@ public class S3QuorumStorage implements Storage {
     /**
      * Health check listener for logging health status changes
      */
-    private class HealthCheckLogger implements HealthCheckScheduler.HealthCheckListener {
+    private static class HealthCheckLogger implements HealthCheckScheduler.HealthCheckListener {
         
         @Override
         public void onHealthCheckResult(String healthCheckName, HealthCheckResult result) {

@@ -24,6 +24,8 @@ import com.automq.stream.s3.network.NetworkBandwidthLimiter;
 
 import org.apache.commons.lang3.StringUtils;
 
+import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,7 +42,22 @@ public class ObjectStorageFactory {
 
     static {
         ObjectStorageFactory.instance().registerProtocolHandler(PROTOCOL_ROOT, builder -> {
-            throw new UnsupportedOperationException();
+            if (builder.quorumEnabled() && builder.buckets() != null && builder.buckets().size() > 1) {
+                return new QuorumObjectStorage(builder);
+            } else if (builder.buckets() != null && !builder.buckets().isEmpty()) {
+                // Non-quorum case with multiple buckets - use first bucket's protocol
+                BucketURI firstBucket = builder.buckets().get(0);
+                return ObjectStorageFactory.instance().builder(firstBucket)
+                    .tagging(builder.tagging())
+                    .inboundLimiter(builder.inboundLimiter())
+                    .outboundLimiter(builder.outboundLimiter())
+                    .readWriteIsolate(builder.readWriteIsolate())
+                    .checkS3ApiModel(builder.checkS3ApiModel())
+                    .threadPrefix(builder.threadPrefix())
+                    .extension(EXTENSION_TYPE_KEY, builder.extension(EXTENSION_TYPE_KEY))
+                    .build();
+            }
+            throw new UnsupportedOperationException("Root protocol handler requires bucket configuration");
         });
         ObjectStorageFactory.instance()
             .registerProtocolHandler("s3", builder ->
@@ -92,13 +109,139 @@ public class ObjectStorageFactory {
      * Create ObjectStorage with specified extension type
      */
     public static ObjectStorage createObjectStorage(Config config, String extensionType) {
-        // Create a default bucket URI if none is provided in config
-        BucketURI defaultBucket = createDefaultBucket(config, extensionType);
+        // Check if S3 Quorum is enabled
+        boolean quorumEnabled = false;
+        int quorumSize = 3;
+        int writeQuorumSize = 2;
+        int readQuorumSize = 1;
         
-        return instance().builder()
-            .bucket(defaultBucket)
-            .extension(EXTENSION_TYPE_KEY, extensionType)
-            .build();
+        try {
+            // Use reflection to check for quorum configuration
+            java.lang.reflect.Method getQuorumEnabledMethod = config.getClass().getMethod("quorumEnabled");
+            Object quorumEnabledValue = getQuorumEnabledMethod.invoke(config);
+            if (quorumEnabledValue instanceof Boolean) {
+                quorumEnabled = (Boolean) quorumEnabledValue;
+            }
+            
+            if (quorumEnabled) {
+                // Get quorum configuration
+                try {
+                    java.lang.reflect.Method getQuorumSizeMethod = config.getClass().getMethod("quorumSize");
+                    Object quorumSizeValue = getQuorumSizeMethod.invoke(config);
+                    if (quorumSizeValue instanceof Integer) {
+                        quorumSize = (Integer) quorumSizeValue;
+                    }
+                } catch (Exception e) {
+                    // Use default quorum size
+                }
+                
+                try {
+                    java.lang.reflect.Method getWriteQuorumSizeMethod = config.getClass().getMethod("writeQuorumSize");
+                    Object writeQuorumSizeValue = getWriteQuorumSizeMethod.invoke(config);
+                    if (writeQuorumSizeValue instanceof Integer) {
+                        writeQuorumSize = (Integer) writeQuorumSizeValue;
+                    }
+                } catch (Exception e) {
+                    // Use default write quorum size
+                }
+                
+                try {
+                    java.lang.reflect.Method getReadQuorumSizeMethod = config.getClass().getMethod("readQuorumSize");
+                    Object readQuorumSizeValue = getReadQuorumSizeMethod.invoke(config);
+                    if (readQuorumSizeValue instanceof Integer) {
+                        readQuorumSize = (Integer) readQuorumSizeValue;
+                    }
+                } catch (Exception e) {
+                    // Use default read quorum size
+                }
+            }
+        } catch (Exception e) {
+            // Quorum not configured, use single bucket
+        }
+        
+        if (quorumEnabled) {
+            // Use the dataBuckets from config for quorum
+            List<BucketURI> buckets = null;
+            try {
+                java.lang.reflect.Method getDataBucketsMethod = config.getClass().getMethod("dataBuckets");
+                Object dataBucketsValue = getDataBucketsMethod.invoke(config);
+                if (dataBucketsValue instanceof List<?>) {
+                    @SuppressWarnings("unchecked")
+                    List<BucketURI> uncheckedBuckets = (List<BucketURI>) dataBucketsValue;
+                    buckets = uncheckedBuckets;
+                }
+            } catch (Exception e) {
+                // Fall back to default bucket creation
+                buckets = createQuorumBuckets(config, extensionType, quorumSize);
+            }
+            
+            if (buckets == null || buckets.isEmpty()) {
+                buckets = createQuorumBuckets(config, extensionType, quorumSize);
+            }
+            
+            System.err.println("createObjectStorage() with quorumEnabled=true, using buckets: " + buckets);
+            
+            return instance().builder()
+                .buckets(buckets)
+                .quorumEnabled(true)
+                .quorumSize(quorumSize)
+                .writeQuorumSize(writeQuorumSize)
+                .readQuorumSize(readQuorumSize)
+                .extension(EXTENSION_TYPE_KEY, extensionType)
+                .build();
+        } else {
+            // Create a default bucket URI if none is provided in config
+            BucketURI defaultBucket = createDefaultBucket(config, extensionType);
+            
+            return instance().builder()
+                .bucket(defaultBucket)
+                .extension(EXTENSION_TYPE_KEY, extensionType)
+                .build();
+        }
+    }
+    
+    /**
+     * Create multiple bucket URIs for quorum configuration
+     */
+    private static List<BucketURI> createQuorumBuckets(Config config, String extensionType, int quorumSize) {
+        List<BucketURI> buckets = new ArrayList<>();
+        
+        // Try to get bucket configurations from Config for quorum replicas
+        try {
+            // Check for data buckets configuration (which may contain multiple buckets)
+            java.lang.reflect.Method getDataBucketsMethod = config.getClass().getMethod("dataBuckets");
+            Object dataBucketsValue = getDataBucketsMethod.invoke(config);
+            if (dataBucketsValue instanceof List<?>) {
+                @SuppressWarnings("unchecked")
+                List<BucketURI> configBuckets = (List<BucketURI>) dataBucketsValue;
+                buckets.addAll(configBuckets);
+            }
+        } catch (Exception e) {
+            // Data buckets not configured, will use default
+        }
+        
+        // If we have enough buckets from config, return them
+        if (buckets.size() >= quorumSize) {
+            return buckets.subList(0, quorumSize);
+        }
+        
+        // If we don't have enough buckets from config, create default ones
+        while (buckets.size() < quorumSize) {
+            int bucketId = buckets.size();
+            String bucketStr;
+            
+            if ("main".equals(extensionType)) {
+                bucketStr = bucketId + "@mem://quorum-main-bucket-" + bucketId;
+            } else if ("background".equals(extensionType)) {
+                bucketStr = bucketId + "@mem://quorum-background-bucket-" + bucketId;
+            } else {
+                bucketStr = bucketId + "@mem://quorum-default-bucket-" + bucketId;
+            }
+            
+            buckets.add(BucketURI.parse(bucketStr));
+        }
+        
+        return buckets;
     }
     
     /**
@@ -117,7 +260,7 @@ public class ObjectStorageFactory {
             if (bucketValue != null && !bucketValue.toString().isEmpty()) {
                 return BucketURI.parse(bucketValue.toString());
             }
-        } catch (Exception e) {
+        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
             // Config doesn't have bucket method or it's null, use default
         }
         
@@ -161,6 +304,10 @@ public class ObjectStorageFactory {
         private boolean checkS3ApiModel = false;
         private String threadPrefix = "";
         private final Map<String, Object> extensions = new HashMap<>();
+        private boolean quorumEnabled = false;
+        private int quorumSize = 3;
+        private int writeQuorumSize = 2;
+        private int readQuorumSize = 1;
 
         Builder bucket(BucketURI bucketURI) {
             this.bucket = bucketURI;
@@ -254,9 +401,58 @@ public class ObjectStorageFactory {
             return extensions;
         }
 
+        public Builder quorumEnabled(boolean enabled) {
+            this.quorumEnabled = enabled;
+            return this;
+        }
+
+        public boolean quorumEnabled() {
+            return quorumEnabled;
+        }
+
+        public Builder quorumSize(int size) {
+            this.quorumSize = size;
+            return this;
+        }
+
+        public int quorumSize() {
+            return quorumSize;
+        }
+
+        public Builder writeQuorumSize(int size) {
+            this.writeQuorumSize = size;
+            return this;
+        }
+
+        public int writeQuorumSize() {
+            return writeQuorumSize;
+        }
+
+        public Builder readQuorumSize(int size) {
+            this.readQuorumSize = size;
+            return this;
+        }
+
+        public int readQuorumSize() {
+            return readQuorumSize;
+        }
+
         public ObjectStorage build() {
             if (StringUtils.isEmpty(this.threadPrefix)) {
                 this.threadPrefix = Long.toString(defaultThreadPrefixCounter.getAndIncrement());
+            }
+            
+            // Debug logging to understand what's happening
+            System.err.println("ObjectStorageFactory.Builder.build() DEBUG:");
+            System.err.println("  quorumEnabled: " + quorumEnabled);
+            System.err.println("  buckets: " + buckets);
+            System.err.println("  bucket: " + bucket);
+            if (buckets != null) {
+                System.err.println("  buckets.size(): " + buckets.size());
+                for (int i = 0; i < buckets.size(); i++) {
+                    System.err.println("    buckets[" + i + "]: " + buckets.get(i));
+                    System.err.println("    buckets[" + i + "].protocol(): " + buckets.get(i).protocol());
+                }
             }
             
             // Ensure bucket is not null
@@ -271,10 +467,32 @@ public class ObjectStorageFactory {
             }
             
             ObjectStorage objectStorage;
-            if (buckets != null && buckets.size() > 1) {
-                objectStorage = protocolHandlers.get(PROTOCOL_ROOT).apply(this);
+            if (quorumEnabled && buckets != null && buckets.size() > 1) {
+                // Create Quorum ObjectStorage for multiple buckets
+                System.err.println("  Creating QuorumObjectStorage");
+                try {
+                    objectStorage = new QuorumObjectStorage(this);
+                    System.err.println("  QuorumObjectStorage created successfully");
+                } catch (Exception e) {
+                    System.err.println("  QuorumObjectStorage creation failed: " + e.getMessage());
+                    e.printStackTrace();
+                    throw e;
+                }
+            } else if (buckets != null && buckets.size() > 1) {
+                // Multiple buckets but quorum disabled - use first bucket only
+                System.err.println("  Multiple buckets but quorum disabled, using first bucket: " + buckets.get(0).protocol());
+                String protocol = buckets.get(0).protocol();
+                if (!protocolHandlers.containsKey(protocol)) {
+                    throw new UnsupportedOperationException("No protocol handler registered for protocol: " + protocol + ". Available protocols: " + protocolHandlers.keySet());
+                }
+                objectStorage = protocolHandlers.get(protocol).apply(this);
             } else {
-                objectStorage = protocolHandlers.get(bucket.protocol()).apply(this);
+                System.err.println("  Single bucket mode, using bucket: " + bucket.protocol());
+                String protocol = bucket.protocol();
+                if (!protocolHandlers.containsKey(protocol)) {
+                    throw new UnsupportedOperationException("No protocol handler registered for protocol: " + protocol + ". Available protocols: " + protocolHandlers.keySet());
+                }
+                objectStorage = protocolHandlers.get(protocol).apply(this);
             }
             return objectStorage;
         }

@@ -213,7 +213,9 @@ public interface ObjectWriter {
             buf.addComponent(true, indexBlock.buffer());
             Footer footer = new Footer(indexBlock.position(), indexBlock.size());
             buf.addComponent(true, footer.buffer());
-            writer.write(buf.duplicate());
+            ByteBuf bufCopy = buf.alloc().buffer(buf.readableBytes());
+            bufCopy.writeBytes(buf, buf.readerIndex(), buf.readableBytes());
+            writer.write(bufCopy);
             size = indexBlock.position() + indexBlock.size() + footer.size();
             return writer.close();
         }

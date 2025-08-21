@@ -38,15 +38,48 @@ public class StreamClientFactory {
      * This method will be called by {@link StreamClientFactoryProxy}
      */
     public static StreamClient get(Context context) {
+        System.err.println("=== StreamClientFactory.get() called ===");
+        
         Config streamConfig = ConfigUtils.to(context.kafkaConfig);
-        ObjectStorage objectStorage = ObjectStorageFactory.instance().builder()
-            .buckets(streamConfig.dataBuckets())
-            .tagging(streamConfig.objectTagging())
-            .extension(EXTENSION_TYPE_KEY, EXTENSION_TYPE_BACKGROUND)
-            .build();
-        return StreamClient.builder()
-            .streamConfig(streamConfig)
-            .objectStorage(objectStorage)
-            .build();
+        
+        System.err.println("=== ConfigUtils.to() completed ===");
+        
+        // Debug logging for quorum configuration
+        System.err.println("S3 StreamClientFactory Debug:");
+        System.err.println("  Quorum Enabled: " + streamConfig.quorumEnabled());
+        System.err.println("  Data Buckets: " + streamConfig.dataBuckets());
+        System.err.println("  Data Buckets size: " + (streamConfig.dataBuckets() != null ? streamConfig.dataBuckets().size() : "null"));
+        if (streamConfig.dataBuckets() != null) {
+            for (int i = 0; i < streamConfig.dataBuckets().size(); i++) {
+                System.err.println("    buckets[" + i + "]: " + streamConfig.dataBuckets().get(i));
+                System.err.println("    buckets[" + i + "].protocol(): " + streamConfig.dataBuckets().get(i).protocol());
+            }
+        }
+        System.err.println("  Quorum Size: " + streamConfig.quorumSize());
+        System.err.println("  Write Quorum Size: " + streamConfig.writeQuorumSize());
+        System.err.println("  Read Quorum Size: " + streamConfig.readQuorumSize());
+        
+        try {
+            ObjectStorage objectStorage = ObjectStorageFactory.instance().builder()
+                .buckets(streamConfig.dataBuckets())
+                .tagging(streamConfig.objectTagging())
+                .quorumEnabled(streamConfig.quorumEnabled())
+                .quorumSize(streamConfig.quorumSize())
+                .writeQuorumSize(streamConfig.writeQuorumSize())
+                .readQuorumSize(streamConfig.readQuorumSize())
+                .extension(EXTENSION_TYPE_KEY, EXTENSION_TYPE_BACKGROUND)
+                .build();
+                
+            System.err.println("ObjectStorage created successfully");
+            
+            return StreamClient.builder()
+                .streamConfig(streamConfig)
+                .objectStorage(objectStorage)
+                .build();
+        } catch (Exception e) {
+            System.err.println("Error creating ObjectStorage: " + e.getMessage());
+            e.printStackTrace();
+            throw e;
+        }
     }
 }
