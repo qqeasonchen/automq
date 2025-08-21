@@ -298,7 +298,12 @@ public interface ObjectWriter {
             header.writeInt(recordCount);
             header.writeInt(0); // data length
             encodedBuf.addComponent(true, header);
-            records.forEach(r -> encodedBuf.addComponent(true, r.encoded().retain()));
+            records.forEach(r -> {
+                ByteBuf recordData = r.encoded();
+                ByteBuf recordCopy = recordData.alloc().buffer(recordData.readableBytes());
+                recordCopy.writeBytes(recordData, recordData.readerIndex(), recordData.readableBytes());
+                encodedBuf.addComponent(true, recordCopy);
+            });
             this.size = encodedBuf.readableBytes();
             encodedBuf.setInt(BLOCK_HEADER_SIZE - 4, size - BLOCK_HEADER_SIZE);
             this.streamRange = new ObjectStreamRange(streamId, records.get(0).getEpoch(), records.get(0).getBaseOffset(), records.get(records.size() - 1).getLastOffset(), size);

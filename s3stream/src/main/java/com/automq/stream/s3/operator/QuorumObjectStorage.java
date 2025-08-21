@@ -19,6 +19,7 @@
 
 package com.automq.stream.s3.operator;
 
+import com.automq.stream.s3.quorum.monitoring.QuorumMetricsCollector;
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +42,7 @@ public class QuorumObjectStorage implements ObjectStorage {
     private final int writeQuorumSize;
     private final int readQuorumSize;
     private final boolean quorumEnabled;
+    private final QuorumMetricsCollector metricsCollector;
     
     /**
      * Constructor for QuorumObjectStorage
@@ -50,8 +52,19 @@ public class QuorumObjectStorage implements ObjectStorage {
         this.readQuorumSize = builder.readQuorumSize();
         this.quorumEnabled = builder.quorumEnabled();
         
+        // Initialize metrics collector
+        QuorumMetricsCollector.MetricsConfig metricsConfig = 
+            new QuorumMetricsCollector.MetricsConfig(true, 30, true); // Enable JMX, 30s reporting interval
+        this.metricsCollector = new QuorumMetricsCollector(metricsConfig);
+        this.metricsCollector.start();
+        
         // Create individual ObjectStorage instances for each bucket
         this.replicas = createReplicasInternal(builder);
+        
+        // Initialize replica count metric
+        this.metricsCollector.setGauge("replica-count", replicas.size());
+        this.metricsCollector.setGauge("write-quorum-size", writeQuorumSize);
+        this.metricsCollector.setGauge("read-quorum-size", readQuorumSize);
         
         LOGGER.info("QuorumObjectStorage initialized with {} replicas, writeQuorum={}, readQuorum={}", 
                    replicas.size(), writeQuorumSize, readQuorumSize);
@@ -93,22 +106,45 @@ public class QuorumObjectStorage implements ObjectStorage {
     
     @Override
     public CompletableFuture<WriteResult> write(WriteOptions options, String objectKey, ByteBuf data) {
-        System.err.println("QuorumObjectStorage.write() DEBUG:");
-        System.err.println("  quorumEnabled: " + quorumEnabled);
-        System.err.println("  replicas.size(): " + replicas.size());
-        System.err.println("  objectKey: " + objectKey);
-        
-        if (!quorumEnabled || replicas.size() == 1) {
-            // Fall back to single replica write
-            System.err.println("  FALLBACK to single replica write");
-            return replicas.get(0).write(options, objectKey, data);
+        try (QuorumMetricsCollector.OperationTimer timer = metricsCollector.startOperation("write")) {
+            metricsCollector.incrementGauge("write-requests-total");
+            
+            LOGGER.debug("QuorumObjectStorage.write() - quorumEnabled: {}, replicas: {}, objectKey: {}", 
+                        quorumEnabled, replicas.size(), objectKey);
+            
+            if (!quorumEnabled || replicas.size() == 1) {
+                // Fall back to single replica write
+                return replicas.get(0).write(options, objectKey, data)
+                    .whenComplete((result, throwable) -> {
+                        if (throwable == null) {
+                            timer.success();
+                            metricsCollector.incrementGauge("write-successes-single");
+                        } else {
+                            timer.failure();
+                            metricsCollector.incrementGauge("write-failures-single");
+                        }
+                    });
+            }
+            
+            return performQuorumWrite(options, objectKey, data)
+                .whenComplete((result, throwable) -> {
+                    if (throwable == null) {
+                        timer.success();
+                        metricsCollector.incrementGauge("write-successes-quorum");
+                    } else {
+                        timer.failure();
+                        metricsCollector.incrementGauge("write-failures-quorum");
+                    }
+                });
         }
-        
-        return performQuorumWrite(options, objectKey, data);
     }
     
     private CompletableFuture<WriteResult> performQuorumWrite(WriteOptions options, String objectKey, ByteBuf data) {
-        LOGGER.debug("Performing quorum write for object: {} to {} replicas", objectKey, replicas.size());
+        return performQuorumWriteWithRetry(options, objectKey, data, 2); // Default: 2 retries
+    }
+    
+    private CompletableFuture<WriteResult> performQuorumWriteWithRetry(WriteOptions options, String objectKey, ByteBuf data, int retryCount) {
+        LOGGER.debug("Performing quorum write for object: {} to {} replicas (retries left: {})", objectKey, replicas.size(), retryCount);
         
         // Create write tasks for all replicas
         List<CompletableFuture<WriteResult>> writeFutures = new ArrayList<>();
@@ -135,28 +171,78 @@ public class QuorumObjectStorage implements ObjectStorage {
         }
         
         // Wait for write quorum to succeed
-        return waitForQuorum(writeFutures, writeQuorumSize, "write", objectKey);
+        return waitForQuorum(writeFutures, writeQuorumSize, "write", objectKey)
+            .exceptionally(throwable -> {
+                if (retryCount > 0) {
+                    LOGGER.info("Quorum write failed for {}, retrying... (retries left: {})", objectKey, retryCount - 1);
+                    try {
+                        Thread.sleep(100 * (3 - retryCount)); // Exponential backoff: 100ms, 200ms
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return performQuorumWriteWithRetry(options, objectKey, data, retryCount - 1).join();
+                } else {
+                    LOGGER.error("Quorum write failed for {} after all retries: {}", objectKey, throwable.getMessage());
+                    throw new RuntimeException(throwable);
+                }
+            });
     }
     
     @Override
     public CompletableFuture<ByteBuf> read(ReadOptions options, String objectKey) {
-        if (!quorumEnabled || replicas.size() == 1) {
-            // Fall back to single replica read
-            return replicas.get(0).read(options, objectKey);
+        try (QuorumMetricsCollector.OperationTimer timer = metricsCollector.startOperation("read")) {
+            metricsCollector.incrementGauge("read-requests-total");
+            
+            if (!quorumEnabled || replicas.size() == 1) {
+                // Fall back to single replica read
+                return replicas.get(0).read(options, objectKey)
+                    .whenComplete((result, throwable) -> {
+                        if (throwable == null) {
+                            timer.success();
+                            metricsCollector.incrementGauge("read-successes-single");
+                        } else {
+                            timer.failure();
+                            metricsCollector.incrementGauge("read-failures-single");
+                        }
+                    });
+            }
+            
+            return performQuorumRead(options, objectKey)
+                .whenComplete((result, throwable) -> {
+                    if (throwable == null) {
+                        timer.success();
+                        metricsCollector.incrementGauge("read-successes-quorum");
+                    } else {
+                        timer.failure();
+                        metricsCollector.incrementGauge("read-failures-quorum");
+                    }
+                });
         }
-        
-        return performQuorumRead(options, objectKey);
     }
     
     private CompletableFuture<ByteBuf> performQuorumRead(ReadOptions options, String objectKey) {
-        LOGGER.debug("Performing quorum read for object: {} from {} replicas", objectKey, replicas.size());
+        return performQuorumReadWithRetry(options, objectKey, 2); // Default: 2 retries
+    }
+    
+    private CompletableFuture<ByteBuf> performQuorumReadWithRetry(ReadOptions options, String objectKey, int retryCount) {
+        LOGGER.debug("Performing quorum read for object: {} from {} replicas (retries left: {})", objectKey, replicas.size(), retryCount);
         
-        // Try to read from multiple replicas in parallel
+        // Try to read from healthy replicas first, then fallback to all replicas
+        List<ObjectStorage> healthyReplicas = replicas.stream()
+            .filter(ObjectStorage::readinessCheck)
+            .collect(Collectors.toList());
+        
+        List<ObjectStorage> replicasToTry = healthyReplicas.isEmpty() ? replicas : healthyReplicas;
+        LOGGER.debug("Using {} healthy replicas out of {} total for read operation", replicasToTry.size(), replicas.size());
+        
+        // Track read consistency for monitoring
+        metricsCollector.setGauge("healthy-replicas-count", healthyReplicas.size());
+        
         List<CompletableFuture<ByteBuf>> readFutures = new ArrayList<>();
         
-        for (int i = 0; i < replicas.size(); i++) {
+        for (int i = 0; i < replicasToTry.size(); i++) {
             final int replicaIndex = i;  // Make final for lambda
-            ObjectStorage replica = replicas.get(i);
+            ObjectStorage replica = replicasToTry.get(i);
             CompletableFuture<ByteBuf> readFuture = replica.read(options, objectKey)
                 .whenComplete((result, throwable) -> {
                     if (throwable != null) {
@@ -169,8 +255,22 @@ public class QuorumObjectStorage implements ObjectStorage {
             readFutures.add(readFuture);
         }
         
-        // Return the first successful read
-        return waitForQuorum(readFutures, readQuorumSize, "read", objectKey);
+        // Return the first successful read with retry logic
+        return waitForQuorum(readFutures, Math.min(readQuorumSize, replicasToTry.size()), "read", objectKey)
+            .exceptionally(throwable -> {
+                if (retryCount > 0) {
+                    LOGGER.info("Quorum read failed for {}, retrying... (retries left: {})", objectKey, retryCount - 1);
+                    try {
+                        Thread.sleep(50 * (3 - retryCount)); // Exponential backoff: 50ms, 100ms
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return performQuorumReadWithRetry(options, objectKey, retryCount - 1).join();
+                } else {
+                    LOGGER.error("Quorum read failed for {} after all retries: {}", objectKey, throwable.getMessage());
+                    throw new RuntimeException(throwable);
+                }
+            });
     }
     
     @Override
@@ -210,7 +310,19 @@ public class QuorumObjectStorage implements ObjectStorage {
                 readyCount++;
             }
         }
-        return readyCount >= readQuorumSize;
+        
+        // Update metrics for monitoring
+        metricsCollector.setGauge("ready-replicas-count", readyCount);
+        metricsCollector.setGauge("quorum-health-percentage", (readyCount * 100) / replicas.size());
+        
+        boolean isHealthy = readyCount >= readQuorumSize;
+        if (!isHealthy) {
+            LOGGER.warn("Quorum not healthy: only {}/{} replicas ready (required: {})", 
+                       readyCount, replicas.size(), readQuorumSize);
+            metricsCollector.incrementGauge("quorum-unhealthy-checks");
+        }
+        
+        return isHealthy;
     }
     
     @Override
@@ -260,6 +372,16 @@ public class QuorumObjectStorage implements ObjectStorage {
     @Override
     public void close() {
         LOGGER.info("Closing QuorumObjectStorage with {} replicas", replicas.size());
+        
+        // Stop metrics collection
+        try {
+            metricsCollector.stop();
+            LOGGER.info("Metrics collector stopped successfully");
+        } catch (Exception e) {
+            LOGGER.warn("Error stopping metrics collector: {}", e.getMessage());
+        }
+        
+        // Close all replicas
         for (ObjectStorage replica : replicas) {
             try {
                 replica.close();
@@ -313,8 +435,16 @@ public class QuorumObjectStorage implements ObjectStorage {
      * Find a healthy replica for operations that don't require quorum
      */
     private CompletableFuture<ObjectStorage> findHealthyReplica() {
-        // For now, return the first replica
-        // In production, you might want to implement health checking
+        // Try replicas in order until we find a healthy one
+        for (ObjectStorage replica : replicas) {
+            if (replica.readinessCheck()) {
+                return CompletableFuture.completedFuture(replica);
+            }
+        }
+        
+        // If no replica is immediately ready, return first available
+        // This maintains backward compatibility while providing better resilience
+        LOGGER.warn("No healthy replicas found in readiness check, using first replica");
         return CompletableFuture.completedFuture(replicas.get(0));
     }
     
