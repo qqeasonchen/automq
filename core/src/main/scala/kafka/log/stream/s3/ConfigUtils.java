@@ -27,7 +27,11 @@ import com.automq.stream.s3.Config;
 public class ConfigUtils {
 
     public static Config to(KafkaConfig s) {
+        System.err.println("=== ConfigUtils.to() starting ===");
         AutoMQConfig config = s.automq();
+        System.err.println("=== ConfigUtils.to() calling getQuorumEnabled ===");
+        boolean quorumEnabled = getQuorumEnabled(s);
+        System.err.println("=== ConfigUtils.to() quorumEnabled result: " + quorumEnabled + " ===");
         return new Config()
             .nodeId(s.nodeId())
             .dataBuckets(config.dataBuckets())
@@ -54,7 +58,7 @@ public class ConfigUtils {
             .networkBaselineBandwidth(s.s3NetworkBaselineBandwidthProp())
             .refillPeriodMs(s.s3RefillPeriodMsProp())
             .objectRetentionTimeInSecond(s.s3ObjectDeleteRetentionTimeInSecond())
-            .quorumEnabled(getQuorumEnabled(s))
+            .quorumEnabled(quorumEnabled)
             .quorumSize(getQuorumSize(s))
             .writeQuorumSize(getWriteQuorumSize(s))
             .readQuorumSize(getReadQuorumSize(s))
@@ -71,12 +75,17 @@ public class ConfigUtils {
         try {
             // Try to get quorum enabled from configuration using originals
             Object quorumEnabledValue = config.originals().get("s3.stream.quorum.enabled");
+            System.err.println("ConfigUtils.getQuorumEnabled() DEBUG:");
+            System.err.println("  s3.stream.quorum.enabled value: " + quorumEnabledValue);
             if (quorumEnabledValue != null) {
-                return Boolean.parseBoolean(quorumEnabledValue.toString());
+                boolean result = Boolean.parseBoolean(quorumEnabledValue.toString());
+                System.err.println("  parsed result: " + result);
+                return result;
             }
         } catch (Exception e) {
-            // Ignore and fall back to default
+            System.err.println("  exception in getQuorumEnabled: " + e.getMessage());
         }
+        System.err.println("  returning default: false");
         return false; // Default: quorum disabled
     }
 

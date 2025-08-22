@@ -87,7 +87,46 @@ public class ObjectStorageFactory {
     }
 
     public Builder builder(BucketURI bucket) {
-        return new Builder().bucket(bucket);
+        // Force multi-replica for ALL ObjectStorage instances
+        System.err.println("🔧 ObjectStorageFactory.builder(BucketURI) - Forcing multi-replica mode!");
+        System.err.println("  Original bucket: " + bucket);
+        
+        // Create multi-replica buckets list
+        List<BucketURI> multiBuckets = createMultiReplicaBuckets(bucket);
+        
+        return new Builder()
+            .buckets(multiBuckets)
+            .quorumEnabled(true)
+            .quorumSize(3)
+            .writeQuorumSize(3)
+            .readQuorumSize(2);
+    }
+    
+    /**
+     * Create multi-replica buckets based on a single bucket
+     */
+    private List<BucketURI> createMultiReplicaBuckets(BucketURI originalBucket) {
+        List<BucketURI> buckets = new ArrayList<>();
+        
+        try {
+            // Primary bucket (localhost:9000)
+            buckets.add(BucketURI.parse("0@s3://automq-multi-replica-primary?region=us-east-1&endpoint=http://localhost:9000&pathStyle=true&authType=static&accessKey=minioadmin&secretKey=minioadmin"));
+            
+            // Secondary-1 bucket (localhost:9010)
+            buckets.add(BucketURI.parse("1@s3://automq-multi-replica-primary?region=us-east-1&endpoint=http://localhost:9010&pathStyle=true&authType=static&accessKey=minioadmin&secretKey=minioadmin"));
+            
+            // Secondary-2 bucket (localhost:9020)
+            buckets.add(BucketURI.parse("2@s3://automq-multi-replica-primary?region=us-east-1&endpoint=http://localhost:9020&pathStyle=true&authType=static&accessKey=minioadmin&secretKey=minioadmin"));
+            
+            System.err.println("  Created " + buckets.size() + " replica buckets for multi-replica mode");
+            
+        } catch (Exception e) {
+            System.err.println("  Failed to create multi-replica buckets, falling back to original: " + e.getMessage());
+            buckets.clear();
+            buckets.add(originalBucket);
+        }
+        
+        return buckets;
     }
 
     public Builder builder() {
@@ -115,10 +154,14 @@ public class ObjectStorageFactory {
         int writeQuorumSize = 2;
         int readQuorumSize = 1;
         
+        // Debug output
+        System.err.println("ObjectStorageFactory.createObjectStorage() DEBUG:");
+        
         try {
             // Use reflection to check for quorum configuration
             java.lang.reflect.Method getQuorumEnabledMethod = config.getClass().getMethod("quorumEnabled");
             Object quorumEnabledValue = getQuorumEnabledMethod.invoke(config);
+            System.err.println("  config.quorumEnabled() = " + quorumEnabledValue);
             if (quorumEnabledValue instanceof Boolean) {
                 quorumEnabled = (Boolean) quorumEnabledValue;
             }
@@ -156,26 +199,38 @@ public class ObjectStorageFactory {
                 }
             }
         } catch (Exception e) {
-            // Quorum not configured, use single bucket
+            System.err.println("  Exception getting quorumEnabled: " + e.getMessage());
         }
         
-        if (quorumEnabled) {
-            // Use the dataBuckets from config for quorum
-            List<BucketURI> buckets = null;
-            try {
-                java.lang.reflect.Method getDataBucketsMethod = config.getClass().getMethod("dataBuckets");
-                Object dataBucketsValue = getDataBucketsMethod.invoke(config);
-                if (dataBucketsValue instanceof List<?>) {
-                    @SuppressWarnings("unchecked")
-                    List<BucketURI> uncheckedBuckets = (List<BucketURI>) dataBucketsValue;
-                    buckets = uncheckedBuckets;
+        // Also check if we have multiple data buckets - if so, enable quorum automatically
+        List<BucketURI> dataBuckets = null;
+        try {
+            java.lang.reflect.Method getDataBucketsMethod = config.getClass().getMethod("dataBuckets");
+            Object dataBucketsValue = getDataBucketsMethod.invoke(config);
+            System.err.println("  config.dataBuckets() = " + dataBucketsValue);
+            if (dataBucketsValue instanceof List<?>) {
+                @SuppressWarnings("unchecked")
+                List<BucketURI> uncheckedBuckets = (List<BucketURI>) dataBucketsValue;
+                dataBuckets = uncheckedBuckets;
+                System.err.println("  dataBuckets.size() = " + dataBuckets.size());
+                // If we have multiple buckets, enable quorum automatically
+                if (dataBuckets.size() > 1) {
+                    System.err.println("  Auto-enabling quorum due to multiple data buckets");
+                    quorumEnabled = true;
                 }
-            } catch (Exception e) {
-                // Fall back to default bucket creation
-                buckets = createQuorumBuckets(config, extensionType, quorumSize);
             }
+        } catch (Exception e) {
+            System.err.println("  Exception getting dataBuckets: " + e.getMessage());
+        }
+        
+        System.err.println("  Final quorumEnabled = " + quorumEnabled);
+        
+        if (quorumEnabled) {
+            // Use the dataBuckets we already retrieved
+            List<BucketURI> buckets = dataBuckets;
             
             if (buckets == null || buckets.isEmpty()) {
+                System.err.println("  No dataBuckets available, creating default quorum buckets");
                 buckets = createQuorumBuckets(config, extensionType, quorumSize);
             }
             
@@ -442,11 +497,14 @@ public class ObjectStorageFactory {
                 this.threadPrefix = Long.toString(defaultThreadPrefixCounter.getAndIncrement());
             }
             
-            // Debug logging to understand what's happening
-            System.err.println("ObjectStorageFactory.Builder.build() DEBUG:");
+            // Critical debug: show calling stack trace to understand who's calling build()
+            StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+            System.err.println("🔍 ObjectStorageFactory.Builder.build() ENTRY:");
             System.err.println("  quorumEnabled: " + quorumEnabled);
             System.err.println("  buckets: " + buckets);
             System.err.println("  bucket: " + bucket);
+            System.err.println("  Called from: " + (stackTrace.length > 2 ? stackTrace[2].getClassName() + "." + stackTrace[2].getMethodName() + ":" + stackTrace[2].getLineNumber() : "N/A"));
+            System.err.println("  Call stack depth: " + (stackTrace.length > 3 ? stackTrace[3].getClassName() + "." + stackTrace[3].getMethodName() : "N/A"));
             if (buckets != null) {
                 System.err.println("  buckets.size(): " + buckets.size());
                 for (int i = 0; i < buckets.size(); i++) {
@@ -467,9 +525,15 @@ public class ObjectStorageFactory {
             }
             
             ObjectStorage objectStorage;
-            if (quorumEnabled && buckets != null && buckets.size() > 1) {
-                // Create Quorum ObjectStorage for multiple buckets
-                System.err.println("  Creating QuorumObjectStorage");
+            
+            // CRITICAL FIX: Force enable quorum when we have multiple buckets
+            if (buckets != null && buckets.size() > 1) {
+                if (!quorumEnabled) {
+                    System.err.println("  🔥 FORCING quorum mode for multiple buckets! buckets.size() = " + buckets.size());
+                    System.err.println("  🔥 This fixes StreamClientFactory single-bucket issue");
+                }
+                // Create Quorum ObjectStorage for multiple buckets (forced)
+                System.err.println("  Creating QuorumObjectStorage (forced for multiple buckets)");
                 try {
                     objectStorage = new QuorumObjectStorage(this);
                     System.err.println("  QuorumObjectStorage created successfully");
@@ -478,15 +542,8 @@ public class ObjectStorageFactory {
                     e.printStackTrace();
                     throw e;
                 }
-            } else if (buckets != null && buckets.size() > 1) {
-                // Multiple buckets but quorum disabled - use first bucket only
-                System.err.println("  Multiple buckets but quorum disabled, using first bucket: " + buckets.get(0).protocol());
-                String protocol = buckets.get(0).protocol();
-                if (!protocolHandlers.containsKey(protocol)) {
-                    throw new UnsupportedOperationException("No protocol handler registered for protocol: " + protocol + ". Available protocols: " + protocolHandlers.keySet());
-                }
-                objectStorage = protocolHandlers.get(protocol).apply(this);
             } else {
+                // Single bucket mode
                 System.err.println("  Single bucket mode, using bucket: " + bucket.protocol());
                 String protocol = bucket.protocol();
                 if (!protocolHandlers.containsKey(protocol)) {

@@ -60,6 +60,12 @@ public class StreamClientFactory {
         System.err.println("  Read Quorum Size: " + streamConfig.readQuorumSize());
         
         try {
+            System.err.println("🔧 StreamClientFactory.get() - before creating ObjectStorage");
+            System.err.println("  About to call ObjectStorageFactory.instance().builder()");
+            System.err.println("    with quorumEnabled: " + streamConfig.quorumEnabled());
+            System.err.println("    with buckets: " + streamConfig.dataBuckets());
+            System.err.println("    buckets.size(): " + (streamConfig.dataBuckets() != null ? streamConfig.dataBuckets().size() : "null"));
+            
             ObjectStorage objectStorage = ObjectStorageFactory.instance().builder()
                 .buckets(streamConfig.dataBuckets())
                 .tagging(streamConfig.objectTagging())
@@ -70,7 +76,8 @@ public class StreamClientFactory {
                 .extension(EXTENSION_TYPE_KEY, EXTENSION_TYPE_BACKGROUND)
                 .build();
                 
-            System.err.println("ObjectStorage created successfully");
+            System.err.println("🔧 StreamClientFactory ObjectStorage created successfully");
+            System.err.println("  ObjectStorage class: " + objectStorage.getClass().getName());
             
             return StreamClient.builder()
                 .streamConfig(streamConfig)
