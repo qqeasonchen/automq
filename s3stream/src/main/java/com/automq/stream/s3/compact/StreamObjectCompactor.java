@@ -357,12 +357,19 @@ public class StreamObjectCompactor {
             }
 
             CompositeByteBuf indexBlockAndFooter = ByteBufAlloc.compositeByteBuffer();
-            indexBlockAndFooter.addComponent(true, indexes);
-            indexBlockAndFooter.addComponent(true, new ObjectWriter.Footer(nextBlockPosition, indexBlockAndFooter.readableBytes()).buffer());
-
-            objectSize += indexBlockAndFooter.readableBytes();
-            writer.write(indexBlockAndFooter.duplicate());
-            writer.close().get();
+            ObjectWriter.Footer footer = new ObjectWriter.Footer(nextBlockPosition, indexes.readableBytes());
+            try {
+                indexBlockAndFooter.addComponent(true, indexes);
+                indexBlockAndFooter.addComponent(true, footer.buffer());
+                objectSize += indexBlockAndFooter.readableBytes();
+                ByteBuf copy = indexBlockAndFooter.alloc().buffer(indexBlockAndFooter.readableBytes());
+                copy.writeBytes(indexBlockAndFooter, indexBlockAndFooter.readerIndex(), indexBlockAndFooter.readableBytes());
+                writer.write(copy);
+                writer.close().get();
+            } finally {
+                indexBlockAndFooter.release();
+                footer.release();
+            }
             List<CompactOperations> operations = compactedObjectIds.stream().map(id -> CompactOperations.DELETE).collect(Collectors.toList());
             return Optional.of(new CompactStreamObjectRequest(objectId, objectSize, streamId, streamEpoch,
                 compactedStartOffset, compactedEndOffset, compactedObjectIds, operations, ObjectAttributes.builder().bucket(writer.bucketId()).build().attributes()));

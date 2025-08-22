@@ -69,11 +69,18 @@ public class CompositeObjectWriter implements ObjectWriter {
         IndexesBlock indexesBlock = new IndexesBlock(components);
         Footer footer = new Footer(indexesBlockStartPosition, indexesBlock.size());
         CompositeByteBuf objBuf = ByteBufAlloc.compositeByteBuffer();
-        objBuf.addComponent(true, objectsBlock.buffer());
-        objBuf.addComponent(true, indexesBlock.buffer());
-        objBuf.addComponent(true, footer.buffer());
-        writer.write(objBuf);
-        return writer.close();
+        try {
+            objBuf.addComponent(true, objectsBlock.buffer());
+            objBuf.addComponent(true, indexesBlock.buffer());
+            objBuf.addComponent(true, footer.buffer());
+            writer.write(objBuf);
+            return writer.close();
+        } finally {
+            objBuf.release();
+            objectsBlock.release();
+            indexesBlock.release();
+            footer.release();
+        }
     }
 
     @Override
@@ -128,11 +135,15 @@ public class CompositeObjectWriter implements ObjectWriter {
         }
 
         public ByteBuf buffer() {
-            return buf.duplicate();
+            return buf.retainedDuplicate();
         }
 
         public int size() {
             return buf.readableBytes();
+        }
+
+        public void release() {
+            buf.release();
         }
     }
 
@@ -150,11 +161,15 @@ public class CompositeObjectWriter implements ObjectWriter {
         }
 
         public ByteBuf buffer() {
-            return buf.duplicate();
+            return buf.retainedDuplicate();
         }
 
         public int size() {
             return buf.readableBytes();
+        }
+
+        public void release() {
+            buf.release();
         }
     }
 
@@ -173,11 +188,15 @@ public class CompositeObjectWriter implements ObjectWriter {
         }
 
         public ByteBuf buffer() {
-            return buf.duplicate();
+            return buf.retainedDuplicate();
         }
 
         public int size() {
             return FOOTER_SIZE;
+        }
+
+        public void release() {
+            buf.release();
         }
 
     }

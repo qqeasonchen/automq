@@ -77,8 +77,25 @@ public class OpsMetricsExporter implements MetricsExporter {
 
     @Override
     public MetricReader asMetricReader() {
-        BucketURI bucket = opsBuckets.get(0);
-        ObjectStorage objectStorage = ObjectStorageFactory.instance().builder(bucket).threadPrefix("ops-metric").build();
+        ObjectStorage objectStorage;
+        if (opsBuckets.size() > 1) {
+            // Multi-bucket mode: use quorum-enabled ObjectStorage
+            objectStorage = ObjectStorageFactory.instance()
+                .builder()
+                .buckets(opsBuckets)
+                .quorumEnabled(true)
+                .quorumSize(opsBuckets.size())
+                .writeQuorumSize(opsBuckets.size())
+                .readQuorumSize(Math.max(1, opsBuckets.size() / 2 + 1))
+                .threadPrefix("ops-metric")
+                .build();
+            LOGGER.info("Using quorum-enabled ObjectStorage for ops metrics with {} replicas", opsBuckets.size());
+        } else {
+            // Single bucket mode (legacy)
+            BucketURI bucket = opsBuckets.get(0);
+            objectStorage = ObjectStorageFactory.instance().builder(bucket).threadPrefix("ops-metric").build();
+            LOGGER.info("Using single-replica ObjectStorage for ops metrics");
+        }
         S3MetricsConfig metricsConfig = new S3MetricsConfig() {
             @Override
             public String clusterId() {

@@ -149,6 +149,8 @@ object ElasticLogManager {
     INSTANCE.foreach(_.startup())
     ElasticLogSegment.txnCache = new FileCache(config.logDirs.head + "/" + "txnindex-cache", 100 * 1024 * 1024)
     ElasticLogSegment.timeCache = new FileCache(config.logDirs.head + "/" + "timeindex-cache", 100 * 1024 * 1024)
+    // Enable ElasticLogManager after successful initialization
+    enable(true)
     INIT_FUTURE.complete(null)
   }
 

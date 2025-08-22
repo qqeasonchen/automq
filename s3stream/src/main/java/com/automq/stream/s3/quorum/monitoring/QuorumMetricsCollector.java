@@ -407,4 +407,53 @@ public class QuorumMetricsCollector {
                                reportingEnabled, reportingIntervalSeconds, detailedTimingEnabled);
         }
     }
+    
+    /**
+     * Get comprehensive metrics summary
+     */
+    public MetricsSummary getMetricsSummary() {
+        long totalOps = 0;
+        long successOps = 0;
+        long totalDurationNanos = 0;
+        
+        // Aggregate metrics from all operations
+        for (OperationMetrics metrics : operationMetrics.values()) {
+            totalOps += metrics.getTotalCount();
+            successOps += metrics.getSuccessCount();
+            totalDurationNanos += metrics.getTotalDurationNanos();
+        }
+        
+        double successRate = totalOps > 0 ? (double) successOps / totalOps : 1.0;
+        double avgDuration = totalOps > 0 ? (double) totalDurationNanos / totalOps / 1_000_000.0 : 0.0;
+        
+        return new MetricsSummary(totalOps, successOps, successRate, avgDuration);
+    }
+    
+    /**
+     * Metrics summary data class
+     */
+    public static class MetricsSummary {
+        private final long totalOperations;
+        private final long successfulOperations;
+        private final double successRate;
+        private final double averageOperationDuration;
+        
+        public MetricsSummary(long totalOperations, long successfulOperations, double successRate, double averageOperationDuration) {
+            this.totalOperations = totalOperations;
+            this.successfulOperations = successfulOperations;
+            this.successRate = successRate;
+            this.averageOperationDuration = averageOperationDuration;
+        }
+        
+        public long getTotalOperations() { return totalOperations; }
+        public long getSuccessfulOperations() { return successfulOperations; }
+        public double getSuccessRate() { return successRate; }
+        public double getAverageOperationDuration() { return averageOperationDuration; }
+        
+        @Override
+        public String toString() {
+            return String.format("MetricsSummary{total=%d, successful=%d, successRate=%.1f%%, avgDuration=%.1fms}",
+                               totalOperations, successfulOperations, successRate * 100, averageOperationDuration);
+        }
+    }
 }

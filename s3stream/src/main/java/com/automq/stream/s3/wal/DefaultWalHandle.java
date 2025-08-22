@@ -65,6 +65,8 @@ public class DefaultWalHandle implements WalHandle {
 
     private CompletableFuture<Void> acquireObjectWALPermission(int nodeId, long nodeEpoch, IdURI walConfig,
         AcquirePermissionOptions options) {
+        // Note: WAL is intentionally single-replica for performance reasons
+        // Only Stream data uses multi-replica storage for durability
         ObjectStorage objectStorage = ObjectStorageFactory.instance().builder(BucketURI.parse(walConfig)).build();
         ObjectReservationService reservationService = new ObjectReservationService(clusterId, objectStorage, walConfig.id());
         return reservationService.acquire(nodeId, nodeEpoch, options.failoverMode());

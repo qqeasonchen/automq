@@ -94,6 +94,8 @@ public interface ObjectWriter {
         private int waitingUploadBlocksSize;
         private IndexBlock indexBlock;
         private long size;
+        private boolean closed = false;
+        private List<ObjectStreamRange> cachedStreamRanges;
 
         private long lastStreamId = Constants.NOOP_STREAM_ID;
         private long lastEndOffset = Constants.NOOP_OFFSET;
@@ -203,24 +205,58 @@ public interface ObjectWriter {
         }
 
         public synchronized CompletableFuture<Void> close() {
-            CompositeByteBuf buf = ByteBufAlloc.compositeByteBuffer();
-            for (DataBlock block : waitingUploadBlocks) {
-                buf.addComponent(true, block.buffer());
-                completedBlocks.add(block);
+            if (closed) {
+                return CompletableFuture.completedFuture(null);
             }
-            waitingUploadBlocks.clear();
-            indexBlock = new IndexBlock();
-            buf.addComponent(true, indexBlock.buffer());
-            Footer footer = new Footer(indexBlock.position(), indexBlock.size());
-            buf.addComponent(true, footer.buffer());
-            ByteBuf bufCopy = buf.alloc().buffer(buf.readableBytes());
-            bufCopy.writeBytes(buf, buf.readerIndex(), buf.readableBytes());
-            writer.write(bufCopy);
-            size = indexBlock.position() + indexBlock.size() + footer.size();
-            return writer.close();
+            closed = true;
+            
+            CompositeByteBuf buf = ByteBufAlloc.compositeByteBuffer();
+            IndexBlock indexBlockLocal = null;
+            Footer footer = null;
+            try {
+                for (DataBlock block : waitingUploadBlocks) {
+                    buf.addComponent(true, block.buffer());
+                    completedBlocks.add(block);
+                }
+                waitingUploadBlocks.clear();
+                indexBlockLocal = new IndexBlock();
+                indexBlock = indexBlockLocal;
+                buf.addComponent(true, indexBlock.buffer());
+                footer = new Footer(indexBlock.position(), indexBlock.size());
+                buf.addComponent(true, footer.buffer());
+                ByteBuf bufCopy = buf.alloc().buffer(buf.readableBytes());
+                bufCopy.writeBytes(buf, buf.readerIndex(), buf.readableBytes());
+                writer.write(bufCopy);
+                size = indexBlock.position() + indexBlock.size() + footer.size();
+                // Cache stream ranges before cleanup
+                cachedStreamRanges = calculateStreamRanges();
+                CompletableFuture<Void> writerCloseFuture = writer.close();
+                return writerCloseFuture.whenComplete((result, throwable) -> {
+                    // Clean up all DataBlocks after writer close completes
+                    for (DataBlock block : completedBlocks) {
+                        block.release();
+                    }
+                    completedBlocks.clear();
+                });
+            } finally {
+                if (footer != null) {
+                    footer.release();
+                }
+                if (indexBlockLocal != null) {
+                    indexBlockLocal.release();
+                }
+                buf.release();
+            }
         }
 
         public List<ObjectStreamRange> getStreamRanges() {
+            if (cachedStreamRanges != null) {
+                return cachedStreamRanges;
+            }
+            return calculateStreamRanges();
+        }
+
+        private List<ObjectStreamRange> calculateStreamRanges() {
             List<ObjectStreamRange> streamRanges = new LinkedList<>();
             ObjectStreamRange lastStreamRange = null;
             for (DataBlock block : completedBlocks) {
@@ -269,7 +305,7 @@ public interface ObjectWriter {
             }
 
             public ByteBuf buffer() {
-                return buf.duplicate();
+                return buf.retainedDuplicate();
             }
 
             public long position() {
@@ -278,6 +314,10 @@ public interface ObjectWriter {
 
             public int size() {
                 return buf.readableBytes();
+            }
+
+            public void release() {
+                buf.release();
             }
         }
     }
@@ -322,7 +362,11 @@ public interface ObjectWriter {
         }
 
         public ByteBuf buffer() {
-            return encodedBuf.duplicate();
+            return encodedBuf.retainedDuplicate();
+        }
+
+        public void release() {
+            encodedBuf.release();
         }
     }
 
@@ -343,11 +387,15 @@ public interface ObjectWriter {
         }
 
         public ByteBuf buffer() {
-            return buf.duplicate();
+            return buf.retainedDuplicate();
         }
 
         public int size() {
             return FOOTER_SIZE;
+        }
+
+        public void release() {
+            buf.release();
         }
 
     }

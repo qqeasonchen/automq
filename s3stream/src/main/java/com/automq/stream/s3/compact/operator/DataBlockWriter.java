@@ -121,20 +121,29 @@ public class DataBlockWriter {
         CompositeByteBuf buf = groupWaitingBlocks();
         List<StreamDataBlock> blocks = new LinkedList<>(waitingUploadBlocks);
         waitingUploadBlocks.clear();
-        indexBlock = new IndexBlock();
-        buf.addComponent(true, indexBlock.buffer());
+        IndexBlock indexBlockLocal = new IndexBlock();
+        indexBlock = indexBlockLocal;
         Footer footer = new Footer();
-        buf.addComponent(true, footer.buffer());
-        writer.write(buf.duplicate());
-        size = indexBlock.position() + indexBlock.size() + footer.size();
-        return writer.close().thenAccept(nil -> {
-            for (StreamDataBlock block : blocks) {
-                waitingUploadBlockCfs.computeIfPresent(block, (k, cf) -> {
-                    cf.complete(null);
-                    return null;
-                });
-            }
-        });
+        try {
+            buf.addComponent(true, indexBlockLocal.buffer());
+            buf.addComponent(true, footer.buffer());
+            ByteBuf bufCopy = buf.alloc().buffer(buf.readableBytes());
+            bufCopy.writeBytes(buf, buf.readerIndex(), buf.readableBytes());
+            writer.write(bufCopy);
+            size = indexBlock.position() + indexBlock.size() + footer.size();
+            return writer.close().thenAccept(nil -> {
+                for (StreamDataBlock block : blocks) {
+                    waitingUploadBlockCfs.computeIfPresent(block, (k, cf) -> {
+                        cf.complete(null);
+                        return null;
+                    });
+                }
+            });
+        } finally {
+            buf.release();
+            footer.release();
+            indexBlockLocal.release();
+        }
     }
 
     private CompositeByteBuf groupWaitingBlocks() {
@@ -181,7 +190,7 @@ public class DataBlockWriter {
         }
 
         public ByteBuf buffer() {
-            return buf.duplicate();
+            return buf.retainedDuplicate();
         }
 
         public long position() {
@@ -190,6 +199,10 @@ public class DataBlockWriter {
 
         public int size() {
             return buf.readableBytes();
+        }
+
+        public void release() {
+            buf.release();
         }
     }
 
@@ -207,11 +220,15 @@ public class DataBlockWriter {
         }
 
         public ByteBuf buffer() {
-            return buf.duplicate();
+            return buf.retainedDuplicate();
         }
 
         public int size() {
             return FOOTER_SIZE;
+        }
+
+        public void release() {
+            buf.release();
         }
 
     }
