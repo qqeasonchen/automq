@@ -68,19 +68,20 @@ public class QuorumObjectStorage implements ObjectStorage {
      */
     public QuorumObjectStorage(ObjectStorageFactory.Builder builder) {
         // Critical debug: Check quorumEnabled setting before assignment
-        LOGGER.error("🔧 QuorumObjectStorage constructor:");
-        LOGGER.error("  builder.quorumEnabled(): " + builder.quorumEnabled());
-        LOGGER.error("  builder.buckets().size(): " + (builder.buckets() != null ? builder.buckets().size() : "null"));
+        LOGGER.info("🔧 QuorumObjectStorage constructor:");
+        LOGGER.info("  builder.quorumEnabled(): " + builder.quorumEnabled());
+        LOGGER.info("  builder.buckets().size(): " + (builder.buckets() != null ? builder.buckets().size() : "null"));
         
-        // Force enable quorum if we have multiple buckets but quorumEnabled is false
+        // FIXED: Always enable quorum if we have multiple buckets
+        // This ensures Stream data gets distributed across all replicas
         boolean effectiveQuorumEnabled = builder.quorumEnabled();
-        if (!effectiveQuorumEnabled && builder.buckets() != null && builder.buckets().size() > 1) {
-            LOGGER.error("  🔥 FORCING quorumEnabled=true due to multiple buckets!");
+        if (builder.buckets() != null && builder.buckets().size() > 1) {
+            LOGGER.info("  ✅ ENABLING quorumEnabled=true due to multiple buckets (size: {})", builder.buckets().size());
             effectiveQuorumEnabled = true;
         }
         
         this.quorumEnabled = effectiveQuorumEnabled;
-        LOGGER.error("  final this.quorumEnabled: " + this.quorumEnabled);
+        LOGGER.info("  final this.quorumEnabled: " + this.quorumEnabled);
         
         // Initialize dynamic configuration
         this.dynamicConfig = new DynamicQuorumConfig(builder.writeQuorumSize(), builder.readQuorumSize());
@@ -237,21 +238,17 @@ public class QuorumObjectStorage implements ObjectStorage {
                         quorumEnabled, replicas.size(), objectKey, trace.getTraceId());
             
             // Critical debug for multi-replica verification
-            LOGGER.error("🔥 QuorumObjectStorage.write() CALLED!");
-            LOGGER.error("  objectKey: " + objectKey);
-            LOGGER.error("  quorumEnabled: " + quorumEnabled);
-            LOGGER.error("  replicas.size(): " + replicas.size());
-            LOGGER.error("  traceId: " + trace.getTraceId());
-            LOGGER.error("  writeQuorumSize: " + dynamicConfig.getWriteQuorumSize());
+            LOGGER.info("🔥 QuorumObjectStorage.write() CALLED!");
+            LOGGER.info("  objectKey: " + objectKey);
+            LOGGER.info("  quorumEnabled: " + quorumEnabled);
+            LOGGER.info("  replicas.size(): " + replicas.size());
+            LOGGER.info("  writeQuorumSize: " + dynamicConfig.getWriteQuorumSize());
             
-            // Check the decision logic
-            boolean shouldUseSingleReplica = !quorumEnabled || replicas.size() == 1;
-            LOGGER.error("  Decision: shouldUseSingleReplica = " + shouldUseSingleReplica);
-            LOGGER.error("    Reason: !quorumEnabled=" + !quorumEnabled + ", replicas.size()==1=" + (replicas.size() == 1));
-            
-            if (shouldUseSingleReplica) {
-                // Fall back to single replica write
-                LOGGER.error("  ❌ Using SINGLE replica write (this is the problem!)");
+            // FIXED: Use quorum write when we have multiple replicas, regardless of quorumEnabled flag
+            // This ensures Stream data is distributed across all replicas
+            if (replicas.size() == 1) {
+                // Only use single replica when we truly have just one replica
+                LOGGER.info("  → Using SINGLE replica write (only 1 replica available)");
                 QuorumTraceContext.TraceSpan span = trace.startSpan("single-replica-write", "replica-0");
                 return replicas.get(0).write(options, objectKey, data)
                     .whenComplete((result, throwable) -> {
@@ -270,8 +267,8 @@ public class QuorumObjectStorage implements ObjectStorage {
             }
             
             // Multi-replica write path
-            System.err.println("  ✅ Using MULTI-replica quorum write!");
-            System.err.println("    Writing to " + replicas.size() + " replicas with writeQuorum=" + dynamicConfig.getWriteQuorumSize());
+            LOGGER.info("  ✅ Using MULTI-replica quorum write!");
+            LOGGER.info("    Writing to {} replicas with writeQuorum={}", replicas.size(), dynamicConfig.getWriteQuorumSize());
             
             return performQuorumWrite(options, objectKey, data, trace)
                 .whenComplete((result, throwable) -> {
@@ -296,16 +293,27 @@ public class QuorumObjectStorage implements ObjectStorage {
         QuorumTraceContext.TraceSpan writeSpan = trace.startSpan("quorum-write");
         long startTime = System.currentTimeMillis();
         
-        LOGGER.debug("Performing quorum write for object: {} to {} replicas (retries left: {}), traceId: {}", 
-                    objectKey, replicas.size(), retryCount, trace.getTraceId());
+        LOGGER.info("✍️ Performing quorum write for object: {} to {} replicas (retries left: {})", 
+                    objectKey, replicas.size(), retryCount);
         
-        // Create write tasks for all replicas
+        // ENHANCED: Check healthy replicas for write operations
+        List<ObjectStorage> healthyReplicas = replicas.stream()
+            .filter(ObjectStorage::readinessCheck)
+            .collect(Collectors.toList());
+        
+        LOGGER.info("📊 Healthy replicas for write: {}/{} (writeQuorum needs: {})", 
+                   healthyReplicas.size(), replicas.size(), dynamicConfig.getWriteQuorumSize());
+        
+        // Create write tasks for all replicas (including potentially failed ones for max availability)
         List<CompletableFuture<WriteResult>> writeFutures = new ArrayList<>();
         
         for (int i = 0; i < replicas.size(); i++) {
             final int replicaIndex = i;  // Make final for lambda
             ObjectStorage replica = replicas.get(i);
+            boolean isHealthy = healthyReplicas.contains(replica);
             QuorumTraceContext.TraceSpan replicaSpan = trace.startSpan("replica-write", "replica-" + replicaIndex);
+            
+            LOGGER.info("📝 Starting write to replica {} (healthy: {})", replicaIndex, isHealthy);
             
             // Create an independent copy of the data for each replica
             ByteBuf dataCopy = data.alloc().buffer(data.readableBytes());
@@ -317,10 +325,10 @@ public class QuorumObjectStorage implements ObjectStorage {
                     dataCopy.release();
                     if (throwable != null) {
                         replicaSpan.recordError(throwable);
-                        LOGGER.warn("Write failed for replica {}: {}", replicaIndex, throwable.getMessage());
+                        LOGGER.warn("❌ Write failed for replica {}: {}", replicaIndex, throwable.getMessage());
                     } else {
                         replicaSpan.complete();
-                        LOGGER.debug("Write succeeded for replica {}: {}", replicaIndex, result);
+                        LOGGER.info("✅ Write succeeded for replica {}: {}", replicaIndex, result);
                     }
                 });
             
@@ -328,6 +336,7 @@ public class QuorumObjectStorage implements ObjectStorage {
         }
         
         // Wait for write quorum to succeed
+        LOGGER.info("🎯 Waiting for {} successful writes out of {} replicas", dynamicConfig.getWriteQuorumSize(), replicas.size());
         return waitForQuorum(writeFutures, dynamicConfig.getWriteQuorumSize(), "write", objectKey, trace)
             .whenComplete((result, throwable) -> {
                 long duration = System.currentTimeMillis() - startTime;
@@ -382,8 +391,8 @@ public class QuorumObjectStorage implements ObjectStorage {
                 getCurrentPrincipal(), "read", objectKey, true, "Read operation authorized"
             );
             
-            if (!quorumEnabled || replicas.size() == 1) {
-                // Fall back to single replica read
+            if (replicas.size() == 1) {
+                // Only use single replica read when we truly have just one replica
                 QuorumTraceContext.TraceSpan span = trace.startSpan("single-replica-read", "replica-0");
                 return replicas.get(0).read(options, objectKey)
                     .whenComplete((result, throwable) -> {
@@ -501,16 +510,19 @@ public class QuorumObjectStorage implements ObjectStorage {
         QuorumTraceContext.TraceSpan readSpan = trace.startSpan("quorum-read");
         long startTime = System.currentTimeMillis();
         
-        LOGGER.debug("Performing quorum read for object: {} from {} replicas (retries left: {}), traceId: {}", 
-                    objectKey, replicas.size(), retryCount, trace.getTraceId());
+        LOGGER.info("🔍 Performing quorum read for object: {} from {} replicas (retries left: {})", 
+                    objectKey, replicas.size(), retryCount);
         
-        // Try to read from healthy replicas first, then fallback to all replicas
+        // ENHANCED: Use aggressive failover strategy for better availability
         List<ObjectStorage> healthyReplicas = replicas.stream()
             .filter(ObjectStorage::readinessCheck)
             .collect(Collectors.toList());
         
-        List<ObjectStorage> replicasToTry = healthyReplicas.isEmpty() ? replicas : healthyReplicas;
-        LOGGER.debug("Using {} healthy replicas out of {} total for read operation", replicasToTry.size(), replicas.size());
+        // AGGRESSIVE FAILOVER: Always try all replicas for maximum availability
+        // This ensures we can still read even when health checks are conservative
+        List<ObjectStorage> replicasToTry = replicas;
+        LOGGER.info("🔄 AGGRESSIVE FAILOVER: Using all {} replicas (healthy: {}, readQuorum: {})", 
+                   replicas.size(), healthyReplicas.size(), dynamicConfig.getReadQuorumSize());
         
         // Track read consistency for monitoring
         metricsCollector.setGauge("healthy-replicas-count", healthyReplicas.size());
@@ -526,18 +538,22 @@ public class QuorumObjectStorage implements ObjectStorage {
                 .whenComplete((result, throwable) -> {
                     if (throwable != null) {
                         replicaSpan.recordError(throwable);
-                        LOGGER.warn("Read failed for replica {}: {}", replicaIndex, throwable.getMessage());
+                        LOGGER.warn("❌ Read failed for replica {}: {}", replicaIndex, throwable.getMessage());
                     } else {
                         replicaSpan.complete();
-                        LOGGER.debug("Read succeeded for replica {}: size={}", replicaIndex, result.readableBytes());
+                        LOGGER.info("✅ Read succeeded for replica {}: size={}", replicaIndex, result.readableBytes());
                     }
                 });
             
             readFutures.add(readFuture);
         }
         
+        // ENHANCED: For readQuorumSize=1, we only need ANY 1 success
+        int requiredSuccessCount = Math.min(dynamicConfig.getReadQuorumSize(), replicasToTry.size());
+        LOGGER.info("🎯 Waiting for {} successful reads out of {} replicas", requiredSuccessCount, replicasToTry.size());
+        
         // Return the first successful read with retry logic
-        return waitForQuorum(readFutures, Math.min(dynamicConfig.getReadQuorumSize(), replicasToTry.size()), "read", objectKey, trace)
+        return waitForQuorum(readFutures, requiredSuccessCount, "read", objectKey, trace)
             .whenComplete((result, throwable) -> {
                 long duration = System.currentTimeMillis() - startTime;
                 if (throwable == null) {
@@ -579,7 +595,7 @@ public class QuorumObjectStorage implements ObjectStorage {
     
     @Override
     public CompletableFuture<Void> delete(List<ObjectPath> objectPaths) {
-        if (!quorumEnabled || replicas.size() == 1) {
+        if (replicas.size() == 1) {
             return replicas.get(0).delete(objectPaths);
         }
         
@@ -624,25 +640,22 @@ public class QuorumObjectStorage implements ObjectStorage {
     @Override
     public Writer writer(WriteOptions options, String objectPath) {
         // Critical debug for Stream writer creation
-        LOGGER.error("🔥 QuorumObjectStorage.writer() CALLED!");
-        LOGGER.error("  objectPath: " + objectPath);
-        LOGGER.error("  quorumEnabled: " + quorumEnabled);
-        LOGGER.error("  replicas.size(): " + replicas.size());
+        LOGGER.info("🔥 QuorumObjectStorage.writer() CALLED!");
+        LOGGER.info("  objectPath: " + objectPath);
+        LOGGER.info("  quorumEnabled: " + quorumEnabled);
+        LOGGER.info("  replicas.size(): " + replicas.size());
         
-        // Check the decision logic
-        boolean shouldUseSingleWriter = !quorumEnabled || replicas.size() == 1;
-        LOGGER.error("  Decision: shouldUseSingleWriter = " + shouldUseSingleWriter);
-        LOGGER.error("    Reason: !quorumEnabled=" + !quorumEnabled + ", replicas.size()==1=" + (replicas.size() == 1));
-        
-        if (shouldUseSingleWriter) {
-            // Fall back to single replica writer
-            LOGGER.error("  ❌ Using SINGLE replica writer (Stream data will not be multi-replica!)");
+        // FIXED: Use quorum writer when we have multiple replicas, regardless of quorumEnabled flag
+        // This ensures Stream data is distributed across all replicas
+        if (replicas.size() == 1) {
+            // Only use single replica writer when we truly have just one replica
+            LOGGER.info("  → Using SINGLE replica writer (only 1 replica available)");
             return replicas.get(0).writer(options, objectPath);
         }
         
         // Create writers for all replicas
-        LOGGER.error("  ✅ Creating MULTI-replica QuorumWriter for Stream data!");
-        LOGGER.error("    Creating writers for " + replicas.size() + " replicas with writeQuorum=" + dynamicConfig.getWriteQuorumSize());
+        LOGGER.info("  ✅ Creating MULTI-replica QuorumWriter for Stream data!");
+        LOGGER.info("    Creating writers for {} replicas with writeQuorum={}", replicas.size(), dynamicConfig.getWriteQuorumSize());
         List<Writer> replicaWriters = new ArrayList<>();
         for (ObjectStorage replica : replicas) {
             Writer replicaWriter = replica.writer(options, objectPath);
@@ -655,7 +668,7 @@ public class QuorumObjectStorage implements ObjectStorage {
     
     @Override
     public CompletableFuture<ByteBuf> rangeRead(ReadOptions options, String objectPath, long start, long end) {
-        if (!quorumEnabled || replicas.size() == 1) {
+        if (replicas.size() == 1) {
             return replicas.get(0).rangeRead(options, objectPath, start, end);
         }
         
