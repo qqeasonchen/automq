@@ -38,14 +38,17 @@ class KafkaS3LogConfig(
       case _ => false
     }
     if (config.automq.opsBuckets().size() > 1 && quorumEnabled) {
-      // Use quorum-enabled ObjectStorage for multi-bucket ops
+      // FIXED: Use optimized 2+1 strategy for logs data
+      val optimizedWriteQuorum = math.min(2, config.automq.opsBuckets().size())
+      val optimizedReadQuorum = 1
+      
       ObjectStorageFactory.instance()
         .builder()
         .buckets(config.automq.opsBuckets())
         .quorumEnabled(true)
         .quorumSize(config.automq.opsBuckets().size())
-        .writeQuorumSize(config.automq.opsBuckets().size())
-        .readQuorumSize(Math.max(1, config.automq.opsBuckets().size() / 2 + 1))
+        .writeQuorumSize(optimizedWriteQuorum)
+        .readQuorumSize(optimizedReadQuorum)
         .threadPrefix("s3-log")
         .build()
     } else {

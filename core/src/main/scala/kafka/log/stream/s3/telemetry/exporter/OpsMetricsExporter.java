@@ -80,13 +80,17 @@ public class OpsMetricsExporter implements MetricsExporter {
         ObjectStorage objectStorage;
         if (opsBuckets.size() > 1) {
             // Multi-bucket mode: use quorum-enabled ObjectStorage
+            // OPTIMIZED: Use 2-replica write strategy for efficiency
+            int optimizedWriteQuorum = Math.min(2, opsBuckets.size());
+            int optimizedReadQuorum = 1; // Always read from 1 replica for performance
+            
             objectStorage = ObjectStorageFactory.instance()
                 .builder()
                 .buckets(opsBuckets)
                 .quorumEnabled(true)
                 .quorumSize(opsBuckets.size())
-                .writeQuorumSize(opsBuckets.size())
-                .readQuorumSize(Math.max(1, opsBuckets.size() / 2 + 1))
+                .writeQuorumSize(optimizedWriteQuorum)
+                .readQuorumSize(optimizedReadQuorum)
                 .threadPrefix("ops-metric")
                 .build();
             LOGGER.info("Using quorum-enabled ObjectStorage for ops metrics with {} replicas", opsBuckets.size());

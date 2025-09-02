@@ -83,8 +83,16 @@ public class QuorumObjectStorage implements ObjectStorage {
         this.quorumEnabled = effectiveQuorumEnabled;
         LOGGER.info("  final this.quorumEnabled: " + this.quorumEnabled);
         
-        // Initialize dynamic configuration
-        this.dynamicConfig = new DynamicQuorumConfig(builder.writeQuorumSize(), builder.readQuorumSize());
+        // CRITICAL FIX: Ensure optimized 2-replica strategy is always used
+        int correctedWriteQuorum = Math.min(2, builder.buckets() != null ? builder.buckets().size() : 2);
+        int correctedReadQuorum = 1; // Always read from 1 replica for performance
+        
+        System.err.println("🔧 QuorumObjectStorage constructor - correcting quorum values:");
+        System.err.println("  Original builder.writeQuorumSize(): " + builder.writeQuorumSize() + ", corrected: " + correctedWriteQuorum);
+        System.err.println("  Original builder.readQuorumSize(): " + builder.readQuorumSize() + ", corrected: " + correctedReadQuorum);
+        
+        // Initialize dynamic configuration with corrected values
+        this.dynamicConfig = new DynamicQuorumConfig(correctedWriteQuorum, correctedReadQuorum);
         
         // Initialize metrics collector
         QuorumMetricsCollector.MetricsConfig metricsConfig = 
@@ -293,27 +301,49 @@ public class QuorumObjectStorage implements ObjectStorage {
         QuorumTraceContext.TraceSpan writeSpan = trace.startSpan("quorum-write");
         long startTime = System.currentTimeMillis();
         
-        LOGGER.info("✍️ Performing quorum write for object: {} to {} replicas (retries left: {})", 
-                    objectKey, replicas.size(), retryCount);
+        LOGGER.info("✍️ Performing optimized 2+1 quorum write for object: {}", objectKey);
         
-        // ENHANCED: Check healthy replicas for write operations
+        // OPTIMIZED: Check healthy replicas and select primary 2 replicas + backup
         List<ObjectStorage> healthyReplicas = replicas.stream()
             .filter(ObjectStorage::readinessCheck)
             .collect(Collectors.toList());
         
-        LOGGER.info("📊 Healthy replicas for write: {}/{} (writeQuorum needs: {})", 
-                   healthyReplicas.size(), replicas.size(), dynamicConfig.getWriteQuorumSize());
+        int writeQuorumSize = dynamicConfig.getWriteQuorumSize();
+        System.err.println("🔍 QuorumObjectStorage.write() DEBUGGING:");
+        System.err.println("  Total replicas: " + replicas.size());
+        System.err.println("  Healthy replicas: " + healthyReplicas.size());
+        System.err.println("  WriteQuorumSize: " + writeQuorumSize);
+        System.err.println("  Replica health status:");
+        for (int i = 0; i < replicas.size(); i++) {
+            ObjectStorage replica = replicas.get(i);
+            boolean healthy = replica.readinessCheck();
+            System.err.println("    Replica[" + i + "] bucketId=" + replica.bucketId() + " healthy=" + healthy);
+        }
         
-        // Create write tasks for all replicas (including potentially failed ones for max availability)
+        LOGGER.info("📊 Healthy replicas: {}/{}, writeQuorum: {}", 
+                   healthyReplicas.size(), replicas.size(), writeQuorumSize);
+        
+        // OPTIMIZED STRATEGY: Normal 2-replica write + 1 backup for failures
+        List<ObjectStorage> selectedReplicas = selectReplicasForWrite(healthyReplicas, writeQuorumSize);
+        
+        System.err.println("🎯 Selected " + selectedReplicas.size() + " replicas for write:");
+        for (int i = 0; i < selectedReplicas.size(); i++) {
+            System.err.println("  Selected[" + i + "] bucketId=" + selectedReplicas.get(i).bucketId());
+        }
+        
+        LOGGER.info("🎯 Selected {} replicas for write (2-replica strategy)", selectedReplicas.size());
+        
+        // Create write tasks only for selected replicas
         List<CompletableFuture<WriteResult>> writeFutures = new ArrayList<>();
         
-        for (int i = 0; i < replicas.size(); i++) {
-            final int replicaIndex = i;  // Make final for lambda
-            ObjectStorage replica = replicas.get(i);
-            boolean isHealthy = healthyReplicas.contains(replica);
+        for (int i = 0; i < selectedReplicas.size(); i++) {
+            final int replicaIndex = i;
+            ObjectStorage replica = selectedReplicas.get(i);
             QuorumTraceContext.TraceSpan replicaSpan = trace.startSpan("replica-write", "replica-" + replicaIndex);
             
-            LOGGER.info("📝 Starting write to replica {} (healthy: {})", replicaIndex, isHealthy);
+            System.err.println("📝 Writing to replica bucketId=" + replica.bucketId() + " (selected index=" + replicaIndex + ")");
+            LOGGER.info("📝 Writing to selected replica {} (index in full list: {})", 
+                       replicaIndex, replicas.indexOf(replica));
             
             // Create an independent copy of the data for each replica
             ByteBuf dataCopy = data.alloc().buffer(data.readableBytes());
@@ -336,8 +366,9 @@ public class QuorumObjectStorage implements ObjectStorage {
         }
         
         // Wait for write quorum to succeed
-        LOGGER.info("🎯 Waiting for {} successful writes out of {} replicas", dynamicConfig.getWriteQuorumSize(), replicas.size());
-        return waitForQuorum(writeFutures, dynamicConfig.getWriteQuorumSize(), "write", objectKey, trace)
+        int expectedSuccesses = Math.min(writeQuorumSize, selectedReplicas.size());
+        LOGGER.info("🎯 Waiting for {} successful writes out of {} selected replicas", expectedSuccesses, selectedReplicas.size());
+        return waitForQuorum(writeFutures, expectedSuccesses, "write", objectKey, trace)
             .whenComplete((result, throwable) -> {
                 long duration = System.currentTimeMillis() - startTime;
                 if (throwable == null) {
@@ -367,6 +398,77 @@ public class QuorumObjectStorage implements ObjectStorage {
                     }
                 }
             });
+    }
+    
+    /**
+     * OPTIMIZED: Select replicas for write operations using 2+1 strategy
+     * - Normal case: Write to primary 2 replicas only
+     * - Failure case: Use 3rd replica as backup when primary replicas fail
+     */
+    private List<ObjectStorage> selectReplicasForWrite(List<ObjectStorage> healthyReplicas, int writeQuorumSize) {
+        List<ObjectStorage> selectedReplicas = new ArrayList<>();
+        
+        // Strategy 1: If we have enough healthy replicas for normal 2-replica write
+        if (healthyReplicas.size() >= writeQuorumSize) {
+            // ENHANCED STRATEGY: Ensure balanced distribution between Primary and Secondary-1
+            // Always prefer Primary (bucketId=0) and Secondary-1 (bucketId=1) for 2-replica writes
+            List<ObjectStorage> preferredReplicas = new ArrayList<>();
+            ObjectStorage primaryReplica = null;
+            ObjectStorage secondaryReplica = null;
+            
+            // ROBUST STRATEGY: Use index-based selection to ensure balanced distribution
+            // Prioritize Primary (index=0) and Secondary-1 (index=1) for 2-replica writes
+            System.err.println("🔍 ROBUST replica selection strategy:");
+            System.err.println("  Target writeQuorumSize: " + writeQuorumSize);
+            System.err.println("  Available healthy replicas: " + healthyReplicas.size());
+            
+            if (writeQuorumSize == 2 && healthyReplicas.size() >= 2) {
+                // Force balanced Primary + Secondary-1 distribution
+                ObjectStorage replica0 = null, replica1 = null;
+                
+                for (ObjectStorage replica : healthyReplicas) {
+                    int replicaIndex = replicas.indexOf(replica);
+                    System.err.println("    Healthy replica index=" + replicaIndex + " bucketId=" + replica.bucketId());
+                    if (replicaIndex == 0) replica0 = replica;
+                    if (replicaIndex == 1) replica1 = replica;
+                }
+                
+                // GUARANTEE: Always use replica[0] (Primary) + replica[1] (Secondary-1)
+                if (replica0 != null && replica1 != null) {
+                    selectedReplicas.add(replica0);
+                    selectedReplicas.add(replica1);
+                    System.err.println("✅ FORCED balanced distribution: replica[0] + replica[1]");
+                    LOGGER.info("✅ Balanced 2-replica write: Primary (index=0) + Secondary-1 (index=1)");
+                } else {
+                    // Fallback: use first 2 healthy replicas
+                    selectedReplicas.addAll(healthyReplicas.subList(0, 2));
+                    System.err.println("⚠️ Fallback to first 2 healthy replicas");
+                    LOGGER.info("⚠️ Fallback 2-replica write: using first 2 healthy replicas");
+                }
+            } else {
+                // Non-2-replica case: use original logic
+                selectedReplicas.addAll(healthyReplicas.subList(0, Math.min(writeQuorumSize, healthyReplicas.size())));
+                System.err.println("📝 Using standard quorum selection for writeQuorum=" + writeQuorumSize);
+                LOGGER.info("📝 Standard quorum write: using {} replicas", Math.min(writeQuorumSize, healthyReplicas.size()));
+            }
+        } else {
+            // Failure case: Use all healthy replicas + some from backup
+            selectedReplicas.addAll(healthyReplicas);
+            
+            // Add backup replicas if needed
+            int needed = writeQuorumSize - healthyReplicas.size();
+            if (needed > 0) {
+                List<ObjectStorage> backupReplicas = replicas.stream()
+                    .filter(replica -> !healthyReplicas.contains(replica))
+                    .limit(needed)
+                    .collect(Collectors.toList());
+                selectedReplicas.addAll(backupReplicas);
+                LOGGER.info("⚠️ Failover mode: using {} healthy + {} backup replicas", 
+                           healthyReplicas.size(), backupReplicas.size());
+            }
+        }
+        
+        return selectedReplicas;
     }
     
     @Override

@@ -265,7 +265,13 @@ public class DefaultS3Client implements Client {
     }
 
     protected ObjectStorage newMainObjectStorage() {
-        return ObjectStorageFactory.createObjectStorage(config, EXTENSION_TYPE_MAIN);
+        System.err.println("🔧 DefaultS3Client.newMainObjectStorage() called");
+        System.err.println("  Config class: " + config.getClass().getName());
+        System.err.println("  Config.quorumEnabled(): " + config.quorumEnabled());
+        System.err.println("  Config.writeQuorumSize(): " + config.writeQuorumSize());
+        ObjectStorage result = ObjectStorageFactory.createObjectStorage(config, EXTENSION_TYPE_MAIN);
+        System.err.println("  Created ObjectStorage class: " + result.getClass().getName());
+        return result;
     }
 
     protected ObjectStorage newBackgroundObjectStorage() {

@@ -24,6 +24,7 @@ import com.automq.stream.s3.network.NetworkBandwidthLimiter;
 import com.automq.stream.s3.operator.BucketURI;
 import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.s3.operator.ObjectStorageFactory;
+import com.automq.stream.s3.operator.QuorumObjectStorage;
 import com.automq.stream.s3.wal.WalFactory;
 import com.automq.stream.s3.wal.WriteAheadLog;
 import com.automq.stream.s3.wal.impl.object.ObjectWALConfig;
@@ -54,12 +55,30 @@ public class DefaultWalFactory implements WalFactory {
         switch (uri.protocol().toUpperCase(Locale.ENGLISH)) {
             case "S3":
                 BucketURI bucketURI = to(uri);
-                ObjectStorage walObjectStorage = ObjectStorageFactory.instance()
-                    .builder(bucketURI)
-                    .tagging(objectTagging)
-                    .inboundLimiter(networkInboundLimiter)
-                    .outboundLimiter(networkOutboundLimiter)
-                    .build();
+                
+                // Create ObjectStorage for WAL - will automatically use QuorumObjectStorage if configured
+                ObjectStorage walObjectStorage;
+                try {
+                    walObjectStorage = ObjectStorageFactory.instance()
+                        .builder(bucketURI)
+                        .tagging(objectTagging)
+                        .inboundLimiter(networkInboundLimiter)
+                        .outboundLimiter(networkOutboundLimiter)
+                        .build();
+                    
+                    System.err.println("🔧 WAL ObjectStorage created:");
+                    System.err.println("  ObjectStorage class: " + walObjectStorage.getClass().getName());
+                    System.err.println("  Is QuorumObjectStorage: " + (walObjectStorage instanceof QuorumObjectStorage));
+                    
+                    if (walObjectStorage instanceof QuorumObjectStorage) {
+                        System.err.println("  ✅ WAL will use 2+1 replica strategy for data durability");
+                    } else {
+                        System.err.println("  ⚠️  WAL using single replica - consider multi-bucket configuration");
+                    }
+                } catch (Exception e) {
+                    System.err.println("❌ Error creating WAL ObjectStorage: " + e.getMessage());
+                    throw e;
+                }
 
                 ObjectWALConfig.Builder configBuilder = ObjectWALConfig.builder().withURI(uri)
                     .withClusterId(AutoMQApplication.getClusterId())

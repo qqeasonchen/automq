@@ -23,6 +23,8 @@ import com.automq.stream.s3.Config;
 import com.automq.stream.s3.network.NetworkBandwidthLimiter;
 
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
@@ -33,17 +35,33 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 public class ObjectStorageFactory {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ObjectStorageFactory.class);
     public static final String PROTOCOL_ROOT = "root";
     public static final String EXTENSION_TYPE_KEY = "type";
     public static final String EXTENSION_TYPE_MAIN = "main";
     public static final String EXTENSION_TYPE_BACKGROUND = "background";
     private static volatile ObjectStorageFactory instance;
+    private static volatile QuorumObjectStorage globalQuorumStorage;
     private final Map<String /* protocol */, Function<Builder, ObjectStorage>> protocolHandlers = new HashMap<>();
 
     static {
         ObjectStorageFactory.instance().registerProtocolHandler(PROTOCOL_ROOT, builder -> {
             if (builder.quorumEnabled() && builder.buckets() != null && builder.buckets().size() > 1) {
-                return new QuorumObjectStorage(builder);
+                // CRITICAL FIX: ALWAYS enforce optimized 2-replica strategy for global QuorumObjectStorage
+                int optimizedWriteQuorum = Math.min(2, builder.buckets().size());
+                int optimizedReadQuorum = 1;
+                
+                LOGGER.info("🎯 Root protocol handler - ENFORCING optimized 2-replica strategy:");
+                LOGGER.info("  Original builder writeQuorum: {}, enforcing: {}", builder.writeQuorumSize(), optimizedWriteQuorum);
+                LOGGER.info("  Original builder readQuorum: {}, enforcing: {}", builder.readQuorumSize(), optimizedReadQuorum);
+                
+                // FORCE the optimized values regardless of what builder had
+                builder.writeQuorumSize(optimizedWriteQuorum);
+                builder.readQuorumSize(optimizedReadQuorum);
+                
+                QuorumObjectStorage quorumStorage = new QuorumObjectStorage(builder);
+                globalQuorumStorage = quorumStorage;
+                return quorumStorage;
             } else if (builder.buckets() != null && !builder.buckets().isEmpty()) {
                 // Non-quorum case with multiple buckets - use first bucket's protocol
                 BucketURI firstBucket = builder.buckets().get(0);
@@ -60,8 +78,14 @@ public class ObjectStorageFactory {
             throw new UnsupportedOperationException("Root protocol handler requires bucket configuration");
         });
         ObjectStorageFactory.instance()
-            .registerProtocolHandler("s3", builder ->
-                AwsObjectStorage.builder()
+            .registerProtocolHandler("s3", builder -> {
+                // Check if global QuorumObjectStorage exists and should be used
+                if (globalQuorumStorage != null) {
+                    LOGGER.info("🔄 Reusing global QuorumObjectStorage for S3 protocol request");
+                    return globalQuorumStorage;
+                }
+                
+                return AwsObjectStorage.builder()
                     .bucket(builder.bucket)
                     .tagging(builder.tagging)
                     .inboundLimiter(builder.inboundLimiter)
@@ -69,7 +93,8 @@ public class ObjectStorageFactory {
                     .readWriteIsolate(builder.readWriteIsolate)
                     .checkS3ApiModel(builder.checkS3ApiModel)
                     .threadPrefix(builder.threadPrefix)
-                    .build())
+                    .build();
+            })
             .registerProtocolHandler("mem", builder -> new MemoryObjectStorage(builder.bucket.bucketId()))
             .registerProtocolHandler("file", builder ->
                 LocalFileObjectStorage.builder()
@@ -109,6 +134,9 @@ public class ObjectStorageFactory {
      * Create ObjectStorage with specified extension type
      */
     public static ObjectStorage createObjectStorage(Config config, String extensionType) {
+        LOGGER.info("🔍 ObjectStorageFactory.createObjectStorage() called with extensionType: {}", extensionType);
+        LOGGER.info("🔍 Config object class: {}", config != null ? config.getClass().getName() : "null");
+        
         // Check if S3 Quorum is enabled
         boolean quorumEnabled = false;
         int quorumSize = 3;
@@ -122,6 +150,7 @@ public class ObjectStorageFactory {
             if (quorumEnabledValue instanceof Boolean) {
                 quorumEnabled = (Boolean) quorumEnabledValue;
             }
+            LOGGER.info("🔧 ObjectStorageFactory.createObjectStorage() - quorumEnabled: {}", quorumEnabled);
             
             if (quorumEnabled) {
                 // Get quorum configuration
@@ -141,8 +170,9 @@ public class ObjectStorageFactory {
                     if (writeQuorumSizeValue instanceof Integer) {
                         writeQuorumSize = (Integer) writeQuorumSizeValue;
                     }
+                    LOGGER.info("🔧 ObjectStorageFactory.createObjectStorage() - writeQuorumSize from config: {}", writeQuorumSize);
                 } catch (Exception e) {
-                    // Use default write quorum size
+                    LOGGER.info("🔧 ObjectStorageFactory.createObjectStorage() - using default writeQuorumSize: {}", writeQuorumSize);
                 }
                 
                 try {
@@ -170,14 +200,25 @@ public class ObjectStorageFactory {
                 dataBuckets = uncheckedBuckets;
                 // If we have multiple buckets and quorum is enabled, use quorum storage
                 if (dataBuckets.size() > 1 && quorumEnabled) {
-                    return instance().builder()
+                    // OPTIMIZED: Default to 2-replica write strategy for efficiency
+                    int optimizedWriteQuorum = Math.min(2, dataBuckets.size());
+                    int optimizedReadQuorum = 1; // Always read from 1 replica for performance
+                    
+                    LOGGER.info("🌟 ObjectStorageFactory.createObjectStorage() creating OPTIMIZED QuorumObjectStorage:");
+                    LOGGER.info("  buckets={}, optimizedWriteQuorum={}, optimizedReadQuorum={}", 
+                               dataBuckets.size(), optimizedWriteQuorum, optimizedReadQuorum);
+                    LOGGER.info("  Config writeQuorumSize was: {}", writeQuorumSize);
+                    
+                    QuorumObjectStorage quorumStorage = (QuorumObjectStorage) instance().builder()
                         .buckets(dataBuckets)
                         .quorumEnabled(true)
-                        .quorumSize(quorumSize)
-                        .writeQuorumSize(writeQuorumSize)
-                        .readQuorumSize(readQuorumSize)
+                        .quorumSize(dataBuckets.size())
+                        .writeQuorumSize(optimizedWriteQuorum)
+                        .readQuorumSize(optimizedReadQuorum)
                         .extension(EXTENSION_TYPE_KEY, extensionType)
                         .build();
+                    globalQuorumStorage = quorumStorage;
+                    return quorumStorage;
                 }
             }
         } catch (Exception e) {
@@ -405,18 +446,26 @@ public class ObjectStorageFactory {
             
             // Create QuorumObjectStorage if quorum is enabled and multiple buckets are configured
             if (quorumEnabled && buckets != null && buckets.size() > 1) {
-                // Validate quorum parameters
+                // OPTIMIZED: Use 2-replica write strategy with backup failover
                 if (quorumSize < buckets.size()) {
                     quorumSize = buckets.size();
                 }
                 if (writeQuorumSize < 1) {
-                    writeQuorumSize = Math.max(1, (buckets.size() + 1) / 2);
+                    // Default to 2-replica write for efficiency, with 3rd as backup
+                    writeQuorumSize = Math.min(2, buckets.size());
                 }
                 if (readQuorumSize < 1) {
-                    readQuorumSize = Math.max(1, (buckets.size() + 1) / 2);
+                    // Always read from 1 replica for performance
+                    readQuorumSize = 1;
                 }
                 
-                objectStorage = new QuorumObjectStorage(this);
+                LOGGER.info("🔧 Building QuorumObjectStorage with optimized 2+1 strategy: " +
+                           "totalBuckets={}, writeQuorum={}, readQuorum={}", 
+                           buckets.size(), writeQuorumSize, readQuorumSize);
+                
+                QuorumObjectStorage quorumStorage = new QuorumObjectStorage(this);
+                globalQuorumStorage = quorumStorage;
+                objectStorage = quorumStorage;
             } else {
                 // Single bucket mode - use protocol-specific handler
                 String protocol = bucket.protocol();
