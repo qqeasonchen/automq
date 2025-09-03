@@ -315,9 +315,14 @@ public class QuorumObjectStorage implements ObjectStorage {
             throw new IllegalArgumentException("No buckets configured for QuorumObjectStorage");
         }
         
-        LOGGER.error("🔧 QuorumObjectStorage.createReplicasInternal() - creating {} replicas", buckets.size());
+        LOGGER.info("🔧 QuorumObjectStorage.createReplicasInternal() - creating {} replicas", buckets.size());
+        System.err.println("🔧 QuorumObjectStorage.createReplicasInternal() - creating " + buckets.size() + " replicas");
         
-        for (BucketURI bucketURI : buckets) {
+        for (int i = 0; i < buckets.size(); i++) {
+            BucketURI bucketURI = buckets.get(i);
+            System.err.println("🔧 Creating replica " + i + " for bucket: " + bucketURI);
+            LOGGER.info("🔧 Creating replica {} for bucket: {}", i, bucketURI);
+            
             // CRITICAL FIX: For replica ObjectStorage, we don't want quorum mode since each replica
             // handles only one bucket. The quorum logic is implemented at QuorumObjectStorage level.
             ObjectStorage replica = ObjectStorageFactory.instance()
@@ -328,19 +333,37 @@ public class QuorumObjectStorage implements ObjectStorage {
                 .readWriteIsolate(builder.readWriteIsolate())
                 .checkS3ApiModel(builder.checkS3ApiModel())
                 .threadPrefix(builder.threadPrefix() + "-" + bucketURI.bucketId())
-                // NOTE: Explicitly NOT setting quorumEnabled(true) here because:
-                // 1. Each replica ObjectStorage handles only one bucket (bucketURI)
-                // 2. Quorum logic is implemented at QuorumObjectStorage level, not replica level
-                // 3. Setting quorumEnabled(true) with single bucket would be invalid anyway
+                // CRITICAL: Explicitly disable quorum mode for replicas to prevent nesting
+                .quorumEnabled(false)  // ✅ 明确禁用 quorum 模式
+                .quorumSize(1)         // ✅ 设置为单副本
+                .writeQuorumSize(1)    // ✅ 设置为单副本写入
+                .readQuorumSize(1)     // ✅ 设置为单副本读取
                 .build();
+            
             replicaList.add(replica);
             
-            // Critical debug: Check bucket ID consistency
-            System.err.println("🔧 QuorumObjectStorage replica created:");
+            // Critical debug: Check bucket ID consistency and replica type
+            System.err.println("🔧 QuorumObjectStorage replica " + i + " created:");
             System.err.println("  bucketURI.bucketId(): " + bucketURI.bucketId());
             System.err.println("  replica.bucketId(): " + replica.bucketId());
+            System.err.println("  replica class: " + replica.getClass().getName());
             System.err.println("  bucketURI: " + bucketURI);
+            
+            LOGGER.info("🔧 Replica {} created successfully: bucketId={}, class={}", 
+                       i, replica.bucketId(), replica.getClass().getSimpleName());
+            
+            // Verify that we didn't create a nested QuorumObjectStorage
+            if (replica instanceof QuorumObjectStorage) {
+                String errorMsg = "CRITICAL ERROR: Nested QuorumObjectStorage detected! Replica " + i + 
+                                 " should be AwsObjectStorage, not QuorumObjectStorage";
+                LOGGER.error(errorMsg);
+                System.err.println("❌ " + errorMsg);
+                throw new IllegalStateException(errorMsg);
+            }
         }
+        
+        LOGGER.info("🔧 Successfully created {} replicas for QuorumObjectStorage", replicaList.size());
+        System.err.println("🔧 Successfully created " + replicaList.size() + " replicas for QuorumObjectStorage");
         
         return replicaList;
     }
