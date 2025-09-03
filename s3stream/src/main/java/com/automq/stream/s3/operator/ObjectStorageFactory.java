@@ -127,6 +127,10 @@ public class ObjectStorageFactory {
         return new Builder().bucket(bucket);
     }
 
+    public Builder builder(List<BucketURI> buckets) {
+        return new Builder().buckets(buckets);
+    }
+
     public Builder builder() {
         return new Builder();
     }

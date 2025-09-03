@@ -32,6 +32,7 @@ import com.automq.stream.s3.wal.impl.object.ObjectWALService;
 import com.automq.stream.utils.IdURI;
 import com.automq.stream.utils.Time;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -50,26 +51,24 @@ public class DefaultWalFactory implements WalFactory {
     }
 
     @Override
-    public WriteAheadLog build(IdURI uri, BuildOptions options) {
+    public WriteAheadLog build(List< BucketURI> bucketURIList,IdURI uri, BuildOptions options) {
         //noinspection SwitchStatementWithTooFewBranches
         switch (uri.protocol().toUpperCase(Locale.ENGLISH)) {
             case "S3":
-                BucketURI bucketURI = to(uri);
-                
                 // Create ObjectStorage for WAL - will automatically use QuorumObjectStorage if configured
                 ObjectStorage walObjectStorage;
                 try {
                     walObjectStorage = ObjectStorageFactory.instance()
-                        .builder(bucketURI)
+                        .builder(bucketURIList)
                         .tagging(objectTagging)
                         .inboundLimiter(networkInboundLimiter)
                         .outboundLimiter(networkOutboundLimiter)
                         .build();
-                    
+
                     System.err.println("🔧 WAL ObjectStorage created:");
                     System.err.println("  ObjectStorage class: " + walObjectStorage.getClass().getName());
                     System.err.println("  Is QuorumObjectStorage: " + (walObjectStorage instanceof QuorumObjectStorage));
-                    
+
                     if (walObjectStorage instanceof QuorumObjectStorage) {
                         System.err.println("  ✅ WAL will use 2+1 replica strategy for data durability");
                     } else {
