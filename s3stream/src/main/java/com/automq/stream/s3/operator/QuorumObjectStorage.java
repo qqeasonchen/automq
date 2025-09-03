@@ -38,6 +38,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -61,7 +65,41 @@ public class QuorumObjectStorage implements ObjectStorage {
     private QuorumDiagnostics diagnostics;
     private QuorumOperationsManager operationsManager;
     
+    // OPTIMIZATION: Replica isolation management
+    private final ConcurrentHashMap<ObjectStorage, ReplicaIsolationInfo> isolatedReplicas = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService isolationCleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "replica-isolation-cleanup");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final long ISOLATION_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+    
     private static final long OPERATION_TIMEOUT_MS = 30000;
+    
+    /**
+     * Replica isolation information for failed replicas
+     */
+    private static class ReplicaIsolationInfo {
+        private final long isolationStartTime;
+        private final String failureReason;
+        
+        public ReplicaIsolationInfo(String failureReason) {
+            this.isolationStartTime = System.currentTimeMillis();
+            this.failureReason = failureReason;
+        }
+        
+        public boolean isExpired() {
+            return System.currentTimeMillis() - isolationStartTime >= ISOLATION_DURATION_MS;
+        }
+        
+        public long getRemainingIsolationTimeMs() {
+            return Math.max(0, ISOLATION_DURATION_MS - (System.currentTimeMillis() - isolationStartTime));
+        }
+        
+        public String getFailureReason() {
+            return failureReason;
+        }
+    }
     
     /**
      * Constructor for QuorumObjectStorage with P4 Advanced Features
@@ -134,6 +172,9 @@ public class QuorumObjectStorage implements ObjectStorage {
             );
         });
         
+        // Start isolation cleanup scheduler
+        startIsolationCleanupScheduler();
+        
         // Health checker manages its own scheduling
         
         LOGGER.info("QuorumObjectStorage initialized with {} replicas, writeQuorum={}, readQuorum={}, P4 advanced features enabled", 
@@ -143,6 +184,90 @@ public class QuorumObjectStorage implements ObjectStorage {
         securityAuditor.recordAuthenticationEvent(
             "system", "QuorumObjectStorage", true, "Storage system initialized with P4 features"
         );
+    }
+    
+    /**
+     * Start the isolation cleanup scheduler to periodically remove expired isolated replicas
+     */
+    private void startIsolationCleanupScheduler() {
+        isolationCleanupExecutor.scheduleAtFixedRate(() -> {
+            try {
+                cleanupExpiredIsolations();
+            } catch (Exception e) {
+                LOGGER.warn("Error during isolation cleanup: {}", e.getMessage());
+            }
+        }, 30, 30, TimeUnit.SECONDS); // Check every 30 seconds
+    }
+    
+    /**
+     * Clean up expired replica isolations
+     */
+    private void cleanupExpiredIsolations() {
+        List<ObjectStorage> expiredReplicas = new ArrayList<>();
+        
+        for (var entry : isolatedReplicas.entrySet()) {
+            ObjectStorage replica = entry.getKey();
+            ReplicaIsolationInfo isolationInfo = entry.getValue();
+            
+            if (isolationInfo.isExpired()) {
+                expiredReplicas.add(replica);
+                LOGGER.info("Replica isolation expired for bucket {}: {}", replica.bucketId(), isolationInfo.getFailureReason());
+            }
+        }
+        
+        for (ObjectStorage replica : expiredReplicas) {
+            isolatedReplicas.remove(replica);
+            LOGGER.info("Replica {} (bucket {}) isolation removed, available for operations again", 
+                       replicas.indexOf(replica), replica.bucketId());
+        }
+        
+        // Update metrics
+        metricsCollector.setGauge("isolated-replicas-count", isolatedReplicas.size());
+    }
+    
+    /**
+     * Get available (non-isolated) replicas for operations
+     */
+    private List<ObjectStorage> getAvailableReplicas() {
+        return replicas.stream()
+            .filter(replica -> !isolatedReplicas.containsKey(replica))
+            .collect(Collectors.toList());
+    }
+    
+    /**
+     * Isolate a failed replica for 5 minutes
+     */
+    private void isolateReplica(ObjectStorage replica, String failureReason) {
+        if (isolatedReplicas.containsKey(replica)) {
+            LOGGER.debug("Replica {} (bucket {}) is already isolated", 
+                        replicas.indexOf(replica), replica.bucketId());
+            return;
+        }
+        
+        ReplicaIsolationInfo isolationInfo = new ReplicaIsolationInfo(failureReason);
+        isolatedReplicas.put(replica, isolationInfo);
+        
+        LOGGER.warn("Replica {} (bucket {}) isolated for 5 minutes due to: {}", 
+                   replicas.indexOf(replica), replica.bucketId(), failureReason);
+        
+        // Update metrics
+        metricsCollector.setGauge("isolated-replicas-count", isolatedReplicas.size());
+        metricsCollector.incrementGauge("replica-isolations-total");
+    }
+    
+    /**
+     * Remove replica isolation (called when operation succeeds)
+     */
+    private void removeReplicaIsolation(ObjectStorage replica) {
+        ReplicaIsolationInfo removed = isolatedReplicas.remove(replica);
+        if (removed != null) {
+            LOGGER.info("Replica {} (bucket {}) isolation removed due to successful operation", 
+                       replicas.indexOf(replica), replica.bucketId());
+            
+            // Update metrics
+            metricsCollector.setGauge("isolated-replicas-count", isolatedReplicas.size());
+            metricsCollector.incrementGauge("replica-isolations-removed");
+        }
     }
     
     /**
@@ -303,28 +428,33 @@ public class QuorumObjectStorage implements ObjectStorage {
         
         LOGGER.info("✍️ Performing optimized 2+1 quorum write for object: {}", objectKey);
         
-        // OPTIMIZED: Check healthy replicas and select primary 2 replicas + backup
-        List<ObjectStorage> healthyReplicas = replicas.stream()
-            .filter(ObjectStorage::readinessCheck)
-            .collect(Collectors.toList());
+        // OPTIMIZATION: Use available (non-isolated) replicas instead of readinessCheck
+        List<ObjectStorage> availableReplicas = getAvailableReplicas();
         
         int writeQuorumSize = dynamicConfig.getWriteQuorumSize();
         System.err.println("🔍 QuorumObjectStorage.write() DEBUGGING:");
         System.err.println("  Total replicas: " + replicas.size());
-        System.err.println("  Healthy replicas: " + healthyReplicas.size());
+        System.err.println("  Available replicas: " + availableReplicas.size());
+        System.err.println("  Isolated replicas: " + isolatedReplicas.size());
         System.err.println("  WriteQuorumSize: " + writeQuorumSize);
-        System.err.println("  Replica health status:");
+        System.err.println("  Replica availability status:");
         for (int i = 0; i < replicas.size(); i++) {
             ObjectStorage replica = replicas.get(i);
-            boolean healthy = replica.readinessCheck();
-            System.err.println("    Replica[" + i + "] bucketId=" + replica.bucketId() + " healthy=" + healthy);
+            boolean available = !isolatedReplicas.containsKey(replica);
+            if (available) {
+                System.err.println("    Replica[" + i + "] bucketId=" + replica.bucketId() + " available=true");
+            } else {
+                ReplicaIsolationInfo isolationInfo = isolatedReplicas.get(replica);
+                long remainingTime = isolationInfo.getRemainingIsolationTimeMs();
+                System.err.println("    Replica[" + i + "] bucketId=" + replica.bucketId() + " available=false (isolated, remaining: " + remainingTime + "ms)");
+            }
         }
         
-        LOGGER.info("📊 Healthy replicas: {}/{}, writeQuorum: {}", 
-                   healthyReplicas.size(), replicas.size(), writeQuorumSize);
+        LOGGER.info("📊 Available replicas: {}/{}, isolated: {}, writeQuorum: {}", 
+                   availableReplicas.size(), replicas.size(), isolatedReplicas.size(), writeQuorumSize);
         
         // OPTIMIZED STRATEGY: Normal 2-replica write + 1 backup for failures
-        List<ObjectStorage> selectedReplicas = selectReplicasForWrite(healthyReplicas, writeQuorumSize);
+        List<ObjectStorage> selectedReplicas = selectReplicasForWrite(availableReplicas, writeQuorumSize);
         
         System.err.println("🎯 Selected " + selectedReplicas.size() + " replicas for write:");
         for (int i = 0; i < selectedReplicas.size(); i++) {
@@ -356,9 +486,16 @@ public class QuorumObjectStorage implements ObjectStorage {
                     if (throwable != null) {
                         replicaSpan.recordError(throwable);
                         LOGGER.warn("❌ Write failed for replica {}: {}", replicaIndex, throwable.getMessage());
+                        
+                        // OPTIMIZATION: Isolate failed replica for 5 minutes
+                        String failureReason = "Write operation failed: " + throwable.getMessage();
+                        isolateReplica(replica, failureReason);
                     } else {
                         replicaSpan.complete();
                         LOGGER.info("✅ Write succeeded for replica {}: {}", replicaIndex, result);
+                        
+                        // OPTIMIZATION: Remove isolation if replica was previously isolated
+                        removeReplicaIsolation(replica);
                     }
                 });
             
@@ -615,19 +752,18 @@ public class QuorumObjectStorage implements ObjectStorage {
         LOGGER.info("🔍 Performing quorum read for object: {} from {} replicas (retries left: {})", 
                     objectKey, replicas.size(), retryCount);
         
-        // ENHANCED: Use aggressive failover strategy for better availability
-        List<ObjectStorage> healthyReplicas = replicas.stream()
-            .filter(ObjectStorage::readinessCheck)
-            .collect(Collectors.toList());
+        // OPTIMIZATION: Use available (non-isolated) replicas instead of readinessCheck
+        List<ObjectStorage> availableReplicas = getAvailableReplicas();
         
-        // AGGRESSIVE FAILOVER: Always try all replicas for maximum availability
-        // This ensures we can still read even when health checks are conservative
-        List<ObjectStorage> replicasToTry = replicas;
-        LOGGER.info("🔄 AGGRESSIVE FAILOVER: Using all {} replicas (healthy: {}, readQuorum: {})", 
-                   replicas.size(), healthyReplicas.size(), dynamicConfig.getReadQuorumSize());
+        // AGGRESSIVE FAILOVER: Always try all available replicas for maximum availability
+        // This ensures we can still read even when some replicas are isolated
+        List<ObjectStorage> replicasToTry = availableReplicas;
+        LOGGER.info("🔄 AGGRESSIVE FAILOVER: Using {} available replicas (isolated: {}, readQuorum: {})", 
+                   availableReplicas.size(), isolatedReplicas.size(), dynamicConfig.getReadQuorumSize());
         
         // Track read consistency for monitoring
-        metricsCollector.setGauge("healthy-replicas-count", healthyReplicas.size());
+        metricsCollector.setGauge("available-replicas-count", availableReplicas.size());
+        metricsCollector.setGauge("isolated-replicas-count", isolatedReplicas.size());
         
         List<CompletableFuture<ByteBuf>> readFutures = new ArrayList<>();
         
@@ -641,9 +777,16 @@ public class QuorumObjectStorage implements ObjectStorage {
                     if (throwable != null) {
                         replicaSpan.recordError(throwable);
                         LOGGER.warn("❌ Read failed for replica {}: {}", replicaIndex, throwable.getMessage());
+                        
+                        // OPTIMIZATION: Isolate failed replica for 5 minutes
+                        String failureReason = "Read operation failed: " + throwable.getMessage();
+                        isolateReplica(replica, failureReason);
                     } else {
                         replicaSpan.complete();
                         LOGGER.info("✅ Read succeeded for replica {}: size={}", replicaIndex, result.readableBytes());
+                        
+                        // OPTIMIZATION: Remove isolation if replica was previously isolated
+                        removeReplicaIsolation(replica);
                     }
                 });
             
@@ -717,22 +860,18 @@ public class QuorumObjectStorage implements ObjectStorage {
     
     @Override
     public boolean readinessCheck() {
-        // Check if at least read quorum replicas are ready
-        int readyCount = 0;
-        for (ObjectStorage replica : replicas) {
-            if (replica.readinessCheck()) {
-                readyCount++;
-            }
-        }
+        // OPTIMIZATION: Check if at least read quorum replicas are available (non-isolated)
+        int availableCount = getAvailableReplicas().size();
         
         // Update metrics for monitoring
-        metricsCollector.setGauge("ready-replicas-count", readyCount);
-        metricsCollector.setGauge("quorum-health-percentage", (readyCount * 100) / replicas.size());
+        metricsCollector.setGauge("available-replicas-count", availableCount);
+        metricsCollector.setGauge("isolated-replicas-count", isolatedReplicas.size());
+        metricsCollector.setGauge("quorum-health-percentage", (availableCount * 100) / replicas.size());
         
-        boolean isHealthy = readyCount >= dynamicConfig.getReadQuorumSize();
+        boolean isHealthy = availableCount >= dynamicConfig.getReadQuorumSize();
         if (!isHealthy) {
-            LOGGER.warn("Quorum not healthy: only {}/{} replicas ready (required: {})", 
-                       readyCount, replicas.size(), dynamicConfig.getReadQuorumSize());
+            LOGGER.warn("Quorum not healthy: only {}/{} replicas available (isolated: {}, required: {})", 
+                       availableCount, replicas.size(), isolatedReplicas.size(), dynamicConfig.getReadQuorumSize());
             metricsCollector.incrementGauge("quorum-unhealthy-checks");
         }
         
@@ -817,6 +956,17 @@ public class QuorumObjectStorage implements ObjectStorage {
             LOGGER.info("Metrics collector stopped successfully");
         } catch (Exception e) {
             LOGGER.warn("Error stopping metrics collector: {}", e.getMessage());
+        }
+        
+        // Stop isolation cleanup scheduler
+        try {
+            isolationCleanupExecutor.shutdown();
+            if (!isolationCleanupExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                isolationCleanupExecutor.shutdownNow();
+            }
+            LOGGER.info("Isolation cleanup scheduler stopped successfully");
+        } catch (Exception e) {
+            LOGGER.warn("Error stopping isolation cleanup scheduler: {}", e.getMessage());
         }
         
         // Close all replicas
@@ -934,6 +1084,68 @@ public class QuorumObjectStorage implements ObjectStorage {
      */
     public int getReadQuorumSize() {
         return dynamicConfig.getReadQuorumSize();
+    }
+    
+    /**
+     * Get the number of currently isolated replicas
+     */
+    public int getIsolatedReplicaCount() {
+        return isolatedReplicas.size();
+    }
+    
+    /**
+     * Get the number of currently available replicas
+     */
+    public int getAvailableReplicaCount() {
+        return getAvailableReplicas().size();
+    }
+    
+    /**
+     * Get isolation information for a specific replica
+     */
+    public ReplicaIsolationInfo getReplicaIsolationInfo(ObjectStorage replica) {
+        return isolatedReplicas.get(replica);
+    }
+    
+    /**
+     * Manually remove isolation for a specific replica (for admin operations)
+     */
+    public boolean manuallyRemoveIsolation(ObjectStorage replica) {
+        ReplicaIsolationInfo removed = isolatedReplicas.remove(replica);
+        if (removed != null) {
+            LOGGER.info("Manual isolation removal for replica {} (bucket {}): {}", 
+                       replicas.indexOf(replica), replica.bucketId(), removed.getFailureReason());
+            metricsCollector.incrementGauge("manual-isolation-removals");
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * Get detailed replica status information
+     */
+    public String getReplicaStatusSummary() {
+        StringBuilder summary = new StringBuilder();
+        summary.append("Replica Status Summary:\n");
+        summary.append("  Total replicas: ").append(replicas.size()).append("\n");
+        summary.append("  Available replicas: ").append(getAvailableReplicaCount()).append("\n");
+        summary.append("  Isolated replicas: ").append(getIsolatedReplicaCount()).append("\n");
+        
+        for (int i = 0; i < replicas.size(); i++) {
+            ObjectStorage replica = replicas.get(i);
+            if (isolatedReplicas.containsKey(replica)) {
+                ReplicaIsolationInfo isolationInfo = isolatedReplicas.get(replica);
+                long remainingTime = isolationInfo.getRemainingIsolationTimeMs();
+                summary.append("  Replica[").append(i).append("] (bucket ").append(replica.bucketId())
+                       .append("): ISOLATED - ").append(isolationInfo.getFailureReason())
+                       .append(" (remaining: ").append(remainingTime).append("ms)\n");
+            } else {
+                summary.append("  Replica[").append(i).append("] (bucket ").append(replica.bucketId())
+                       .append("): AVAILABLE\n");
+            }
+        }
+        
+        return summary.toString();
     }
     
     // P4 Advanced Features Access Methods
