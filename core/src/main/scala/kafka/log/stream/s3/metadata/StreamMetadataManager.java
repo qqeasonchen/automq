@@ -177,6 +177,11 @@ public class StreamMetadataManager implements InRangeObjectsFetcher, MetadataPub
             CompletableFuture<InRangeObjects> getObjectsCf = streamsImage.getObjects(streamId, startOffset, endOffset, limit,
                 new DefaultRangeGetter(objectsImage, objectReaderFactory), indexCache);
             getObjectsCf.thenAccept(rst -> {
+                // CRITICAL FIX: Add null check to prevent NullPointerException
+                if (rst == null) {
+                    LOGGER.warn("[FetchObjects] Received null result for streamId={}, using INVALID", streamId);
+                    rst = InRangeObjects.INVALID;
+                }
                 if (rst.objects().size() >= limit || rst.endOffset() >= endOffset || rst == InRangeObjects.INVALID) {
                     rst.objects().forEach(object -> {
                         S3Object objectMetadata = objectsImage.getObjectMetadata(object.objectId());

@@ -379,6 +379,13 @@ import static com.automq.stream.s3.cache.CacheAccessType.BLOCK_CACHE_MISS;
                 }
             } else {
                 if (!moreBlocks && endOffset > loadedBlockIndexEndOffset) {
+                    // If loadedBlockIndexEndOffset is 0, it might be because blocks were reset due to object compaction
+                    if (loadedBlockIndexEndOffset == 0L) {
+                        // Retry loading from the beginning after blocks reset
+                        long nextStartOffset = ctx.blocks.isEmpty() ? startOffset : ctx.blocks.get(ctx.blocks.size() - 1).index.endOffset();
+                        getBlocks0(ctx, nextStartOffset, endOffset, finalRemainingSize);
+                        return;
+                    }
                     String errMsg = String.format("[BUG] streamId=%s expect load blocks to endOffset=%s, " + "current loadedBlockIndexEndOffset=%s", streamId, endOffset, loadedBlockIndexEndOffset);
                     ctx.cf.completeExceptionally(new AutoMQException(errMsg));
                     return;

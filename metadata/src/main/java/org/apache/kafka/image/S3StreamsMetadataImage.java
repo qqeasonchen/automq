@@ -188,12 +188,14 @@ public final class S3StreamsMetadataImage extends AbstractReferenceCounted {
         long endOffset = ctx.endOffset;
         int limit = ctx.limit;
         if (streamId < 0 || limit < 0 || (endOffset != ObjectUtils.NOOP_OFFSET && startOffset > endOffset)) {
-            ctx.cf.complete(InRangeObjects.INVALID);
+            // CRITICAL FIX: Ensure we never complete with null, always use INVALID
+            ctx.cf.complete(InRangeObjects.INVALID != null ? InRangeObjects.INVALID : new InRangeObjects(-1, Collections.emptyList()));
             return;
         }
         S3StreamMetadataImage stream = getStreamMetadata(streamId);
         if (stream == null || startOffset < stream.startOffset()) {
-            ctx.cf.complete(InRangeObjects.INVALID);
+            // CRITICAL FIX: Ensure we never complete with null, always use INVALID
+            ctx.cf.complete(InRangeObjects.INVALID != null ? InRangeObjects.INVALID : new InRangeObjects(-1, Collections.emptyList()));
             return;
         }
         List<S3ObjectMetadata> objects = new LinkedList<>();
@@ -361,7 +363,9 @@ public final class S3StreamsMetadataImage extends AbstractReferenceCounted {
                 " range=[%d, %d), limit=%d", ctx.streamId, ctx.startOffset, ctx.endOffset, ctx.limit), t));
             return;
         }
-        ctx.cf.complete(new InRangeObjects(ctx.streamId, objects));
+        // CRITICAL FIX: Additional null safety check before completing future
+        InRangeObjects result = new InRangeObjects(ctx.streamId, objects != null ? objects : Collections.emptyList());
+        ctx.cf.complete(result);
     }
 
     /**

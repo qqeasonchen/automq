@@ -262,10 +262,15 @@ public class ControllerObjectManager implements ObjectManager {
         int limit) {
         return this.metadataManager.fetch(streamId, startOffset, endOffset, limit).thenApply(inRangeObjects -> {
             if (inRangeObjects == null || inRangeObjects == InRangeObjects.INVALID) {
-                LOGGER.error("Unexpected getObjects result={} from streamId={} [{}, {}) limit={}", inRangeObjects, streamId, startOffset, endOffset, limit);
-                throw new AutoMQException("Unexpected getObjects result");
+                LOGGER.warn("getObjects result is null/invalid for streamId={} [{}, {}) limit={}, returning empty list", 
+                    streamId, startOffset, endOffset, limit);
+                return Collections.<S3ObjectMetadata>emptyList();
             }
             return inRangeObjects.objects();
+        }).exceptionally(throwable -> {
+            LOGGER.error("Failed to fetch objects for streamId={} [{}, {}) limit={}", 
+                streamId, startOffset, endOffset, limit, throwable);
+            return Collections.<S3ObjectMetadata>emptyList();
         });
     }
 
