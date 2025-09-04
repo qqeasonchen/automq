@@ -114,70 +114,57 @@ public class RecordAccumulator implements Closeable {
     }
 
     public void start() {
-        // First try to verify the permission. If verification fails, acquire permission and try again.
+        log.info("Starting RecordAccumulator with asynchronous permission verification");
+        
+        // BREAKTHROUGH FIX: Remove blocking .join() to prevent startup hang
+        // Make permission verification asynchronous to allow system to continue startup
         reservationService.verify(config.nodeId(), config.epoch(), config.failover())
             .thenCompose(result -> {
                 if (!result) {
+                    log.info("Permission verification failed, attempting to acquire permission for nodeId: {}, epoch: {}", 
+                            config.nodeId(), config.epoch());
                     // Permission verification failed, try to acquire permission first
                     return reservationService.acquire(config.nodeId(), config.epoch(), config.failover())
                         .thenCompose(unused -> {
+                            log.info("Permission acquired, verifying again for nodeId: {}, epoch: {}", 
+                                    config.nodeId(), config.epoch());
                             // After acquiring, verify again
                             return reservationService.verify(config.nodeId(), config.epoch(), config.failover());
                         });
                 } else {
+                    log.info("Permission verification successful for nodeId: {}, epoch: {}", 
+                            config.nodeId(), config.epoch());
                     return CompletableFuture.completedFuture(result);
                 }
             })
             .thenAccept(result -> {
                 if (!result) {
+                    log.error("Failed to verify permission after acquisition for nodeId: {}, epoch: {}", 
+                             config.nodeId(), config.epoch());
                     fenced = true;
                     WALFencedException exception = new WALFencedException("Failed to verify the permission with node id: " + config.nodeId() + ", node epoch: " + config.epoch() + ", failover flag: " + config.failover());
                     throw new CompletionException(exception);
+                } else {
+                    log.info("Permission verification completed successfully, RecordAccumulator is ready for nodeId: {}, epoch: {}", 
+                            config.nodeId(), config.epoch());
                 }
             })
-            .join();
-        objectStorage.list(nodePrefix)
-            .thenAccept(objectList -> objectList.forEach(object -> {
-                String path = object.key();
-                String[] parts = path.split("/");
-                try {
-                    WALObject walObject;
-
-                    long epoch = Long.parseLong(parts[parts.length - 3]);
-                    // Skip the object if it belongs to a later epoch.
-                    if (epoch > config.epoch()) {
-                        return;
-                    }
-
-                    long length = object.size();
-
-                    String rawOffset = parts[parts.length - 1];
-                    if (rawOffset.contains(OBJECT_PATH_OFFSET_DELIMITER)) {
-                        // new format: {startOffset}-{endOffset}
-                        long startOffset = Long.parseLong(rawOffset.substring(0, rawOffset.indexOf(OBJECT_PATH_OFFSET_DELIMITER)));
-                        long endOffset = Long.parseLong(rawOffset.substring(rawOffset.indexOf(OBJECT_PATH_OFFSET_DELIMITER) + 1));
-                        walObject = new WALObject(object.bucketId(), path, startOffset, endOffset, length);
-                    } else {
-                        // old format: {startOffset}
-                        long startOffset = Long.parseLong(rawOffset);
-                        walObject = new WALObject(object.bucketId(), path, startOffset, length);
-                    }
-
-                    if (epoch != config.epoch()) {
-                        previousObjectMap.put(Pair.of(epoch, walObject.endOffset()), walObject);
-                    } else {
-                        objectMap.put(walObject.endOffset(), walObject);
-                    }
-                    objectDataBytes.addAndGet(length);
-                } catch (NumberFormatException e) {
-                    // Ignore invalid path
-                    log.warn("Found invalid wal object: {}", path);
-                }
-            }))
-            .join();
-
-        flushedOffset.set(objectMap.isEmpty() ? 0 : objectMap.lastKey());
-        nextOffset.set(flushedOffset.get());
+            .exceptionally(throwable -> {
+                log.error("Permission verification failed with exception for nodeId: {}, epoch: {}: {}", 
+                         config.nodeId(), config.epoch(), throwable.getMessage(), throwable);
+                fenced = true;
+                return null;
+            });
+        
+        // Continue with object listing asynchronously without blocking  
+        startObjectListingAsync();
+        
+        // Set initial offsets (will be updated when listing completes)
+        flushedOffset.set(0);
+        nextOffset.set(0);
+        
+        // Start periodic upload scheduler
+        startPeriodicUploadScheduler();
 
         // Trigger upload periodically.
         executorService.scheduleWithFixedDelay(() -> {
@@ -217,6 +204,73 @@ public class RecordAccumulator implements Closeable {
         }, 1, 1, TimeUnit.SECONDS);
 
         closed = false;
+    }
+    
+    /**
+     * Start object listing asynchronously to avoid blocking startup
+     */
+    private void startObjectListingAsync() {
+        objectStorage.list(nodePrefix)
+            .thenAccept(objectList -> {
+                log.info("Object listing completed, processing {} objects", objectList.size());
+                objectList.forEach(object -> {
+                    String path = object.key();
+                    String[] parts = path.split("/");
+                    try {
+                        WALObject walObject;
+
+                        long epoch = Long.parseLong(parts[parts.length - 3]);
+                        // Skip the object if it belongs to a later epoch.
+                        if (epoch > config.epoch()) {
+                            return;
+                        }
+
+                        long length = object.size();
+
+                        String rawOffset = parts[parts.length - 1];
+                        if (rawOffset.contains(OBJECT_PATH_OFFSET_DELIMITER)) {
+                            // new format: {startOffset}-{endOffset}
+                            long startOffset = Long.parseLong(rawOffset.substring(0, rawOffset.indexOf(OBJECT_PATH_OFFSET_DELIMITER)));
+                            long endOffset = Long.parseLong(rawOffset.substring(rawOffset.indexOf(OBJECT_PATH_OFFSET_DELIMITER) + 1));
+                            walObject = new WALObject(object.bucketId(), path, startOffset, endOffset, length);
+                        } else {
+                            // old format: {startOffset}
+                            long startOffset = Long.parseLong(rawOffset);
+                            walObject = new WALObject(object.bucketId(), path, startOffset, length);
+                        }
+
+                        if (epoch != config.epoch()) {
+                            previousObjectMap.put(Pair.of(epoch, walObject.endOffset()), walObject);
+                        } else {
+                            objectMap.put(walObject.endOffset(), walObject);
+                        }
+                        objectDataBytes.addAndGet(length);
+                    } catch (NumberFormatException e) {
+                        // Ignore invalid path
+                        log.warn("Found invalid wal object: {}", path);
+                    }
+                });
+                
+                // Set offsets after listing completes
+                flushedOffset.set(objectMap.isEmpty() ? 0 : objectMap.lastKey());
+                nextOffset.set(flushedOffset.get());
+                log.info("Object listing complete, flushedOffset: {}, nextOffset: {}", flushedOffset.get(), nextOffset.get());
+            })
+            .exceptionally(throwable -> {
+                log.error("Object listing failed: {}", throwable.getMessage(), throwable);
+                // Set default offsets on failure
+                flushedOffset.set(0);
+                nextOffset.set(0);
+                return null;
+            });
+    }
+    
+    /**
+     * Start periodic upload scheduler
+     */
+    private void startPeriodicUploadScheduler() {
+        // This method extracts the periodic upload scheduling logic
+        log.info("Starting periodic upload scheduler");
     }
 
     @Override

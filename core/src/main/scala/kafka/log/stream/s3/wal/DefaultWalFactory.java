@@ -59,7 +59,8 @@ public class DefaultWalFactory implements WalFactory {
                 ObjectStorage walObjectStorage;
                 try {
                     walObjectStorage = ObjectStorageFactory.instance()
-                        .builder(bucketURIList)
+                        .builder()
+                        .buckets(bucketURIList)
                         .tagging(objectTagging)
                         .inboundLimiter(networkInboundLimiter)
                         .outboundLimiter(networkOutboundLimiter)
