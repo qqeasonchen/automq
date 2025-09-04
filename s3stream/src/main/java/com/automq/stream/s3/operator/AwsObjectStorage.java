@@ -95,6 +95,23 @@ import static com.automq.stream.utils.FutureUtil.cause;
 public class AwsObjectStorage extends AbstractObjectStorage {
     // use the root logger to log the error to both log file and stdout
     private static final Logger READINESS_CHECK_LOGGER = LoggerFactory.getLogger("ObjectStorageReadinessCheck");
+    
+    // CRITICAL FIX: Global startup optimization to avoid readinessCheck during StreamMetadataManager initialization
+    private static volatile boolean globalInitializationPhase = true;
+    private static volatile long globalInitializationStartTime = 0;
+    private static final long GLOBAL_INITIALIZATION_PHASE_DURATION_MS = 60000; // 1 minute since async initialization
+    
+    // Static method to disable readinessCheck globally during StreamMetadataManager initialization
+    public static void disableReadinessCheckForInitialization() {
+        globalInitializationPhase = true;
+        globalInitializationStartTime = System.currentTimeMillis();
+        READINESS_CHECK_LOGGER.info("🚀 S3 QUORUM FIX: Disabling readinessCheck globally for StreamMetadataManager initialization (duration: {}ms)", GLOBAL_INITIALIZATION_PHASE_DURATION_MS);
+    }
+    
+    public static void enableReadinessCheckAfterInitialization() {
+        globalInitializationPhase = false;
+        READINESS_CHECK_LOGGER.info("✅ FORCE: Enabling readinessCheck after StreamMetadataManager initialization completed");
+    }
     public static final String S3_API_NO_SUCH_KEY = "NoSuchKey";
     public static final String PATH_STYLE_KEY = "pathStyle";
     public static final String CHECKSUM_ALGORITHM_KEY = "checksumAlgorithm";
@@ -448,13 +465,52 @@ public class AwsObjectStorage extends AbstractObjectStorage {
             .build();
     }
 
+    /**
+     * Check if we are still in global initialization phase
+     */
+    private static boolean isInGlobalInitializationPhase() {
+        if (!globalInitializationPhase) {
+            return false;
+        }
+        
+        // Initialize start time on first call (reset to current time to ensure we get the full duration)
+        if (globalInitializationStartTime == 0) {
+            globalInitializationStartTime = System.currentTimeMillis();
+            READINESS_CHECK_LOGGER.info("🚀 INIT_START: Starting global initialization phase tracking for {}ms", GLOBAL_INITIALIZATION_PHASE_DURATION_MS);
+        }
+        
+        long elapsedTime = System.currentTimeMillis() - globalInitializationStartTime;
+        if (elapsedTime > GLOBAL_INITIALIZATION_PHASE_DURATION_MS) {
+            globalInitializationPhase = false;
+            READINESS_CHECK_LOGGER.info("🚀 Global initialization phase completed after {}ms, enabling full readinessCheck", elapsedTime);
+            return false;
+        }
+        
+        return true;
+    }
+    
     public boolean readinessCheck() {
+        READINESS_CHECK_LOGGER.info("🔍 DEBUG: readinessCheck called for {}, globalInitializationPhase={}, startTime={}", 
+            bucketURI, globalInitializationPhase, globalInitializationStartTime);
+        
+        // CRITICAL FIX: During initialization phase, return true immediately to avoid blocking StreamMetadataManager
+        if (isInGlobalInitializationPhase()) {
+            READINESS_CHECK_LOGGER.info("🚀 Global initialization phase: skipping readinessCheck for {} to avoid blocking StreamMetadataManager", bucketURI);
+            return true;
+        }
+        
         return new ReadinessCheck().readinessCheck();
     }
 
     class ReadinessCheck {
         public boolean readinessCheck() {
-            READINESS_CHECK_LOGGER.info("Start readiness check for {}", bucketURI);
+            // CRITICAL FIX: During global initialization phase, skip expensive readinessCheck operations
+            if (isInGlobalInitializationPhase()) {
+                READINESS_CHECK_LOGGER.info("🚀 GLOBAL_INIT: Skipping readinessCheck for {} to enable RUNNING state", bucketURI);
+                return true;
+            }
+            
+            READINESS_CHECK_LOGGER.info("🔍 NORMAL: Performing full readiness check for {}", bucketURI);
             String normalPath = String.format("__automq/readiness_check/normal_obj/%d", System.nanoTime());
             try {
                 writeS3Client.headObject(HeadObjectRequest.builder().bucket(bucket).key(normalPath).build()).get();

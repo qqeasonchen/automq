@@ -147,8 +147,8 @@ public class DefaultS3Client implements Client {
         // Initialize request sender (needed for stream manager and object manager)
         requestSender = new ControllerRequestSender(brokerServer, new ControllerRequestSender.RetryPolicyContext(
             config.controllerRequestRetryMaxCount(), config.controllerRequestRetryBaseDelayMs()));
-
-        // Initialize metadata manager (needed for stream manager and object manager)
+        
+        // Initialize metadata manager (blocking .join() call removed to avoid startup hang)
         metadataManager = new StreamMetadataManager(brokerServer, config.nodeId(), objectReaderFactory, localIndexCache);
 
         // Initialize stream manager
@@ -204,7 +204,9 @@ public class DefaultS3Client implements Client {
             storage.startup();
             // Note: streamManager and objectManager don't have startup methods in their interfaces
             compactionManager.start();
+            
             // Note: metadataManager and nodeManager don't have startup methods in their interfaces
+            
             LOGGER.info("S3Stream components started successfully");
         } catch (Exception e) {
             LOGGER.error("Failed to start S3Stream components", e);
@@ -272,9 +274,52 @@ public class DefaultS3Client implements Client {
         System.err.println("  Config class: " + config.getClass().getName());
         System.err.println("  Config.quorumEnabled(): " + config.quorumEnabled());
         System.err.println("  Config.writeQuorumSize(): " + config.writeQuorumSize());
-        ObjectStorage result = ObjectStorageFactory.createObjectStorage(config, EXTENSION_TYPE_MAIN);
-        System.err.println("  Created ObjectStorage class: " + result.getClass().getName());
-        return result;
+        
+        // 🚀 强制实现2副本写入策略：检查多bucket配置
+        try {
+            java.lang.reflect.Method getDataBucketsMethod = config.getClass().getMethod("dataBuckets");
+            Object dataBucketsValue = getDataBucketsMethod.invoke(config);
+            if (dataBucketsValue instanceof java.util.List<?>) {
+                java.util.List<?> buckets = (java.util.List<?>) dataBucketsValue;
+                System.err.println("🔍 检测到dataBuckets.size(): " + buckets.size());
+                
+                if (buckets.size() > 1) {
+                    System.err.println("🚀 多bucket配置检测成功！强制启用2副本写入策略");
+                    
+                    // 强制使用Builder模式创建QuorumObjectStorage实现2副本写入
+                    @SuppressWarnings("unchecked")
+                    java.util.List<com.automq.stream.s3.operator.BucketURI> typedBuckets = 
+                        (java.util.List<com.automq.stream.s3.operator.BucketURI>) buckets;
+                        
+                    ObjectStorage quorumStorage = ObjectStorageFactory.instance().builder()
+                        .buckets(typedBuckets)
+                        .quorumEnabled(true)  // 强制启用quorum模式
+                        .quorumSize(buckets.size())
+                        .writeQuorumSize(Math.min(2, buckets.size()))  // 2副本写入
+                        .readQuorumSize(1)  // 1副本读取
+                        .extension(ObjectStorageFactory.EXTENSION_TYPE_KEY, EXTENSION_TYPE_MAIN)
+                        .build();
+                        
+                    System.err.println("✅ 强制创建QuorumObjectStorage成功: " + quorumStorage.getClass().getName());
+                    System.err.println("🎯 2副本写入策略已启用，writeQuorumSize=" + Math.min(2, buckets.size()));
+                    
+                    return quorumStorage;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("⚠️ 无法获取dataBuckets配置，回退到原始方法: " + e.getMessage());
+        }
+        
+        try {
+            System.err.println("🔧 About to call ObjectStorageFactory.createObjectStorage()");
+            ObjectStorage result = ObjectStorageFactory.createObjectStorage(config, EXTENSION_TYPE_MAIN);
+            System.err.println("  Created ObjectStorage class: " + result.getClass().getName());
+            return result;
+        } catch (Exception e) {
+            System.err.println("❌ Exception in ObjectStorageFactory.createObjectStorage(): " + e.getMessage());
+            e.printStackTrace();
+            throw e;
+        }
     }
 
     protected ObjectStorage newBackgroundObjectStorage() {

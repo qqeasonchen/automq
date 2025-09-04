@@ -253,6 +253,31 @@ public class AutoMQConfig {
 
     // Deprecated config end
 
+    // S3 Quorum configuration
+    public static final String S3_STREAM_QUORUM_ENABLED_CONFIG = "s3.stream.quorum.enabled";
+    public static final String S3_STREAM_QUORUM_ENABLED_DOC = "Whether to enable S3 stream quorum storage for multi-replica writes.";
+
+    public static final String S3_STREAM_QUORUM_SIZE_CONFIG = "s3.stream.quorum.size";
+    public static final String S3_STREAM_QUORUM_SIZE_DOC = "The total number of replicas in the quorum.";
+
+    public static final String S3_STREAM_QUORUM_WRITE_SIZE_CONFIG = "s3.stream.quorum.write.size";
+    public static final String S3_STREAM_QUORUM_WRITE_SIZE_DOC = "The number of replicas that must acknowledge a write for it to be considered successful.";
+
+    public static final String S3_STREAM_QUORUM_READ_SIZE_CONFIG = "s3.stream.quorum.read.size";
+    public static final String S3_STREAM_QUORUM_READ_SIZE_DOC = "The number of replicas to read from for read operations.";
+
+    public static final String S3_STREAM_QUORUM_WRITE_TIMEOUT_MS_CONFIG = "s3.stream.quorum.write.timeout.ms";
+    public static final String S3_STREAM_QUORUM_WRITE_TIMEOUT_MS_DOC = "The timeout in milliseconds for quorum write operations.";
+
+    public static final String S3_STREAM_QUORUM_READ_TIMEOUT_MS_CONFIG = "s3.stream.quorum.read.timeout.ms";
+    public static final String S3_STREAM_QUORUM_READ_TIMEOUT_MS_DOC = "The timeout in milliseconds for quorum read operations.";
+
+    public static final String S3_STREAM_QUORUM_READ_REPAIR_ENABLED_CONFIG = "s3.stream.quorum.read.repair.enabled";
+    public static final String S3_STREAM_QUORUM_READ_REPAIR_ENABLED_DOC = "Whether to enable read repair for inconsistent replicas.";
+
+    public static final String S3_STREAM_QUORUM_READ_REPAIR_TIMEOUT_MS_CONFIG = "s3.stream.quorum.read.repair.timeout.ms";
+    public static final String S3_STREAM_QUORUM_READ_REPAIR_TIMEOUT_MS_DOC = "The timeout in milliseconds for read repair operations.";
+
     public static void define(ConfigDef configDef) {
         configDef.define(AutoMQConfig.ELASTIC_STREAM_ENABLE_CONFIG, BOOLEAN, false, HIGH, AutoMQConfig.ELASTIC_STREAM_ENABLE_DOC)
             .define(AutoMQConfig.ELASTIC_STREAM_ENDPOINT_CONFIG, STRING, "s3://", HIGH, AutoMQConfig.ELASTIC_STREAM_ENDPOINT_DOC)
@@ -306,7 +331,16 @@ public class AutoMQConfig {
             .define(AutoMQConfig.S3_TELEMETRY_EXPORTER_OTLP_COMPRESSION_ENABLE_CONFIG, BOOLEAN, false, MEDIUM, AutoMQConfig.S3_TELEMETRY_EXPORTER_OTLP_COMPRESSION_ENABLE_DOC)
             .define(AutoMQConfig.S3_METRICS_EXPORTER_PROM_HOST_CONFIG, STRING, "localhost", MEDIUM, AutoMQConfig.S3_METRICS_EXPORTER_PROM_HOST_DOC)
             .define(AutoMQConfig.S3_METRICS_EXPORTER_PROM_PORT_CONFIG, INT, 9090, MEDIUM, AutoMQConfig.S3_METRICS_EXPORTER_PROM_PORT_DOC)
-            .define(AutoMQConfig.TABLE_TOPIC_SCHEMA_REGISTRY_URL_CONFIG, STRING, null, MEDIUM, AutoMQConfig.TABLE_TOPIC_SCHEMA_REGISTRY_URL_DOC);
+            .define(AutoMQConfig.TABLE_TOPIC_SCHEMA_REGISTRY_URL_CONFIG, STRING, null, MEDIUM, AutoMQConfig.TABLE_TOPIC_SCHEMA_REGISTRY_URL_DOC)
+            // S3 Quorum configuration definitions
+            .define(AutoMQConfig.S3_STREAM_QUORUM_ENABLED_CONFIG, BOOLEAN, false, HIGH, AutoMQConfig.S3_STREAM_QUORUM_ENABLED_DOC)
+            .define(AutoMQConfig.S3_STREAM_QUORUM_SIZE_CONFIG, INT, 3, MEDIUM, AutoMQConfig.S3_STREAM_QUORUM_SIZE_DOC)
+            .define(AutoMQConfig.S3_STREAM_QUORUM_WRITE_SIZE_CONFIG, INT, 2, MEDIUM, AutoMQConfig.S3_STREAM_QUORUM_WRITE_SIZE_DOC)
+            .define(AutoMQConfig.S3_STREAM_QUORUM_READ_SIZE_CONFIG, INT, 1, MEDIUM, AutoMQConfig.S3_STREAM_QUORUM_READ_SIZE_DOC)
+            .define(AutoMQConfig.S3_STREAM_QUORUM_WRITE_TIMEOUT_MS_CONFIG, LONG, 15000L, MEDIUM, AutoMQConfig.S3_STREAM_QUORUM_WRITE_TIMEOUT_MS_DOC)
+            .define(AutoMQConfig.S3_STREAM_QUORUM_READ_TIMEOUT_MS_CONFIG, LONG, 5000L, MEDIUM, AutoMQConfig.S3_STREAM_QUORUM_READ_TIMEOUT_MS_DOC)
+            .define(AutoMQConfig.S3_STREAM_QUORUM_READ_REPAIR_ENABLED_CONFIG, BOOLEAN, true, MEDIUM, AutoMQConfig.S3_STREAM_QUORUM_READ_REPAIR_ENABLED_DOC)
+            .define(AutoMQConfig.S3_STREAM_QUORUM_READ_REPAIR_TIMEOUT_MS_CONFIG, LONG, 2000L, MEDIUM, AutoMQConfig.S3_STREAM_QUORUM_READ_REPAIR_TIMEOUT_MS_DOC);
     }
 
     private List<BucketURI> dataBuckets;

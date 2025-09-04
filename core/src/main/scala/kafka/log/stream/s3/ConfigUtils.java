@@ -73,12 +73,13 @@ public class ConfigUtils {
      */
     private static boolean getQuorumEnabled(KafkaConfig config) {
         try {
-            // Try to get quorum enabled from configuration using originals
             Object quorumEnabledValue = config.originals().get("s3.stream.quorum.enabled");
             System.err.println("ConfigUtils.getQuorumEnabled() DEBUG:");
             System.err.println("  s3.stream.quorum.enabled value: " + quorumEnabledValue);
             if (quorumEnabledValue != null) {
-                boolean result = Boolean.parseBoolean(quorumEnabledValue.toString());
+                String valueStr = quorumEnabledValue.toString().trim();
+                boolean result = Boolean.parseBoolean(valueStr);
+                System.err.println("  trimmed value: '" + valueStr + "'");
                 System.err.println("  parsed result: " + result);
                 return result;
             }
@@ -91,9 +92,9 @@ public class ConfigUtils {
 
     private static int getQuorumSize(KafkaConfig config) {
         try {
-            Object quorumSizeValue = config.originals().get("s3.stream.quorum.size");
-            if (quorumSizeValue != null) {
-                return Integer.parseInt(quorumSizeValue.toString());
+            Integer quorumSize = config.getInt("s3.stream.quorum.size");
+            if (quorumSize != null) {
+                return quorumSize;
             }
         } catch (Exception e) {
             // Ignore and fall back to default
@@ -103,9 +104,9 @@ public class ConfigUtils {
 
     private static int getWriteQuorumSize(KafkaConfig config) {
         try {
-            Object writeQuorumSizeValue = config.originals().get("s3.stream.quorum.write.size");
-            if (writeQuorumSizeValue != null) {
-                return Integer.parseInt(writeQuorumSizeValue.toString());
+            Integer writeQuorumSize = config.getInt("s3.stream.quorum.write.size");
+            if (writeQuorumSize != null) {
+                return writeQuorumSize;
             }
         } catch (Exception e) {
             // Ignore and fall back to default
@@ -115,9 +116,9 @@ public class ConfigUtils {
 
     private static int getReadQuorumSize(KafkaConfig config) {
         try {
-            Object readQuorumSizeValue = config.originals().get("s3.stream.quorum.read.size");
-            if (readQuorumSizeValue != null) {
-                return Integer.parseInt(readQuorumSizeValue.toString());
+            Integer readQuorumSize = config.getInt("s3.stream.quorum.read.size");
+            if (readQuorumSize != null) {
+                return readQuorumSize;
             }
         } catch (Exception e) {
             // Ignore and fall back to default
@@ -127,9 +128,9 @@ public class ConfigUtils {
 
     private static long getWriteTimeoutMs(KafkaConfig config) {
         try {
-            Object writeTimeoutValue = config.originals().get("s3.stream.quorum.write.timeout.ms");
-            if (writeTimeoutValue != null) {
-                return Long.parseLong(writeTimeoutValue.toString());
+            Long writeTimeout = config.getLong("s3.stream.quorum.write.timeout.ms");
+            if (writeTimeout != null) {
+                return writeTimeout;
             }
         } catch (Exception e) {
             // Ignore and fall back to default
@@ -139,9 +140,9 @@ public class ConfigUtils {
 
     private static long getReadTimeoutMs(KafkaConfig config) {
         try {
-            Object readTimeoutValue = config.originals().get("s3.stream.quorum.read.timeout.ms");
-            if (readTimeoutValue != null) {
-                return Long.parseLong(readTimeoutValue.toString());
+            Long readTimeout = config.getLong("s3.stream.quorum.read.timeout.ms");
+            if (readTimeout != null) {
+                return readTimeout;
             }
         } catch (Exception e) {
             // Ignore and fall back to default
@@ -151,9 +152,9 @@ public class ConfigUtils {
 
     private static boolean getReadRepairEnabled(KafkaConfig config) {
         try {
-            Object readRepairEnabledValue = config.originals().get("s3.stream.quorum.read.repair.enabled");
-            if (readRepairEnabledValue != null) {
-                return Boolean.parseBoolean(readRepairEnabledValue.toString());
+            Boolean readRepairEnabled = config.getBoolean("s3.stream.quorum.read.repair.enabled");
+            if (readRepairEnabled != null) {
+                return readRepairEnabled;
             }
         } catch (Exception e) {
             // Ignore and fall back to default
@@ -163,9 +164,9 @@ public class ConfigUtils {
 
     private static long getReadRepairTimeoutMs(KafkaConfig config) {
         try {
-            Object readRepairTimeoutValue = config.originals().get("s3.stream.quorum.read.repair.timeout.ms");
-            if (readRepairTimeoutValue != null) {
-                return Long.parseLong(readRepairTimeoutValue.toString());
+            Long readRepairTimeout = config.getLong("s3.stream.quorum.read.repair.timeout.ms");
+            if (readRepairTimeout != null) {
+                return readRepairTimeout;
             }
         } catch (Exception e) {
             // Ignore and fall back to default

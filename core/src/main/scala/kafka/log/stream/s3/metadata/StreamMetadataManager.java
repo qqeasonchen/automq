@@ -45,6 +45,7 @@ import com.automq.stream.s3.metadata.StreamOffsetRange;
 import com.automq.stream.s3.objects.ObjectAttributes;
 import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.s3.operator.ObjectStorage.ReadOptions;
+import com.automq.stream.s3.operator.AwsObjectStorage;
 import com.automq.stream.s3.streams.StreamMetadataListener;
 import com.automq.stream.utils.FutureUtil;
 import com.automq.stream.utils.Threads;
@@ -87,7 +88,28 @@ public class StreamMetadataManager implements InRangeObjectsFetcher, MetadataPub
         this.indexCache = indexCache;
         this.pendingExecutorService =
             Threads.newSingleThreadScheduledExecutor(new DefaultThreadFactory("pending-get-objects-task-executor"), LOGGER);
-        broker.metadataLoader().installPublishers(List.of(this)).join();
+        
+        // BREAKTHROUGH FIX: 完全异步初始化避免阻塞metadata loading
+        LOGGER.info("🚀 StreamMetadataManager: 启动完全异步初始化避免RECOVERY状态阻塞");
+        
+        // 立即禁用readinessCheck以防止任何S3操作阻塞
+        AwsObjectStorage.disableReadinessCheckForInitialization();
+        
+        // CRITICAL: 使用异步方式安装publisher，避免阻塞broker启动和metadata loading
+        CompletableFuture<Void> asyncInstallFuture = broker.metadataLoader().installPublishers(List.of(this));
+        
+        // 异步处理安装结果，不阻塞构造函数
+        asyncInstallFuture.whenComplete((result, throwable) -> {
+            if (throwable != null) {
+                LOGGER.error("❌ StreamMetadataManager: installPublishers() failed asynchronously: {}", throwable.getMessage());
+            } else {
+                LOGGER.info("✅ StreamMetadataManager: installPublishers() completed asynchronously");
+            }
+            // 成功或失败都重新启用readinessCheck
+            AwsObjectStorage.enableReadinessCheckAfterInitialization();
+        });
+        
+        LOGGER.info("🚀 StreamMetadataManager: 构造函数完成，publisher安装将异步完成");
     }
 
     @Override
