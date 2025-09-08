@@ -23,6 +23,7 @@ import com.automq.stream.s3.network.NetworkBandwidthLimiter;
 
 import org.apache.commons.lang3.StringUtils;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -72,6 +73,9 @@ public class ObjectStorageFactory {
         return new Builder().bucket(bucket);
     }
 
+    public Builder builder(List<BucketURI> buckets) {
+        return new Builder().buckets(buckets);
+    }
     public Builder builder() {
         return new Builder();
     }
@@ -197,7 +201,22 @@ public class ObjectStorageFactory {
             }
             ObjectStorage objectStorage;
             if (buckets != null && buckets.size() > 1) {
-                objectStorage = protocolHandlers.get(PROTOCOL_ROOT).apply(this);
+                // 多S3/bucket场景，自动创建QuorumAwsObjectStorage
+                List<AwsObjectStorage> awsList = new ArrayList<>();
+                for (BucketURI uri : buckets) {
+                    awsList.add(AwsObjectStorage.builder()
+                        .bucket(uri)
+                        .tagging(tagging)
+                        .inboundLimiter(inboundLimiter)
+                        .outboundLimiter(outboundLimiter)
+                        .readWriteIsolate(readWriteIsolate)
+                        .checkS3ApiModel(checkS3ApiModel)
+                        .threadPrefix(threadPrefix)
+                        .build());
+                }
+                // quorum数可通过extension或其它方式传入，这里默认多数
+                int quorum = (int)Math.ceil(buckets.size() / 2.0);
+                objectStorage = new QuorumAwsObjectStorage(awsList, quorum);
             } else {
                 objectStorage = protocolHandlers.get(bucket.protocol()).apply(this);
             }

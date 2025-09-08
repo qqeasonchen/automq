@@ -77,8 +77,7 @@ public class OpsMetricsExporter implements MetricsExporter {
 
     @Override
     public MetricReader asMetricReader() {
-        BucketURI bucket = opsBuckets.get(0);
-        ObjectStorage objectStorage = ObjectStorageFactory.instance().builder(bucket).threadPrefix("ops-metric").build();
+        ObjectStorage objectStorage = ObjectStorageFactory.instance().builder(opsBuckets).threadPrefix("ops-metric").build();
         S3MetricsConfig metricsConfig = new S3MetricsConfig() {
             @Override
             public String clusterId() {
