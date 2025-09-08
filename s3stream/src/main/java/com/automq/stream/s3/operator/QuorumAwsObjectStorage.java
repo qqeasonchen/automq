@@ -1,7 +1,8 @@
 package com.automq.stream.s3.operator;
 
 import io.netty.buffer.ByteBuf;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -40,11 +41,112 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
         }
     }
 
-    // 1. doWrite: 多份写，N份成功
+    // 1. doWrite: 2+1优化写入策略 - 优先写前2个副本，成功则不写第3个
     public CompletableFuture<Void> doWrite(WriteOptions options, String path, ByteBuf data) {
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        
+        if (storages.size() < 2) {
+            // 如果副本数小于2，回退到原始逻辑
+            return doWriteAllReplicas(options, path, data);
+        }
+        
+        // 第一阶段：尝试写入前2个副本
+        writeToPrimaryReplicas(options, path, data, result);
+        
+        return result;
+    }
+    
+    private void writeToPrimaryReplicas(WriteOptions options, String path, ByteBuf data, CompletableFuture<Void> result) {
+        AtomicInteger primarySuccess = new AtomicInteger(0);
+        AtomicInteger primaryCompleted = new AtomicInteger(0);
+        
+        // 向前2个副本写入
+        for (int i = 0; i < Math.min(2, storages.size()); i++) {
+            ByteBuf copy = data.retainedDuplicate();
+            
+            storages.get(i).doWrite(options, path, copy).whenComplete((v, ex) -> {
+                try {
+                    if (ex == null) {
+                        int successCount = primarySuccess.incrementAndGet();
+                        if (successCount >= 2) {
+                            // 前2个副本都成功，释放原始data并返回成功
+                            if (data.refCnt() > 0) {
+                                data.release();
+                            }
+                            result.complete(null);
+                            return;
+                        }
+                    }
+                    
+                    // 检查前2个副本是否都完成了
+                    if (primaryCompleted.incrementAndGet() >= 2) {
+                        // 前2个副本完成，但没有2个都成功，尝试第3个副本
+                        if (!result.isDone() && storages.size() > 2) {
+                            writeToBackupReplica(options, path, data, primarySuccess.get(), result);
+                        } else if (!result.isDone()) {
+                            // 没有第3个副本，且前2个没有都成功，释放原始data
+                            if (data.refCnt() > 0) {
+                                data.release();
+                            }
+                            result.completeExceptionally(new RuntimeException("Primary replicas write failed and no backup available"));
+                        }
+                    }
+                } finally {
+                    // 释放ByteBuf副本
+                    if (copy != null && copy.refCnt() > 0) {
+                        copy.release();
+                    }
+                }
+            });
+        }
+    }
+    
+    private void writeToBackupReplica(WriteOptions options, String path, ByteBuf data, int primarySuccessCount, CompletableFuture<Void> result) {
+        if (storages.size() <= 2 || result.isDone()) {
+            // 如果没有备用副本或结果已完成，释放原始数据
+            if (data.refCnt() > 0) {
+                data.release();
+            }
+            return;
+        }
+        
+        ByteBuf backupCopy = data.retainedDuplicate();
+        storages.get(2).doWrite(options, path, backupCopy).whenComplete((v, ex) -> {
+            try {
+                if (ex == null) {
+                    // 第3个副本成功，检查总成功数是否达到quorum
+                    if (primarySuccessCount + 1 >= quorum) {
+                        result.complete(null);
+                    } else {
+                        result.completeExceptionally(new RuntimeException("Insufficient successful replicas"));
+                    }
+                } else {
+                    // 第3个副本也失败
+                    if (primarySuccessCount >= quorum) {
+                        result.complete(null);
+                    } else {
+                        result.completeExceptionally(new RuntimeException("All replica writes failed to meet quorum"));
+                    }
+                }
+            } finally {
+                // 释放ByteBuf副本
+                if (backupCopy != null && backupCopy.refCnt() > 0) {
+                    backupCopy.release();
+                }
+                // 释放原始数据 - 这里是最后的释放点
+                if (data != null && data.refCnt() > 0) {
+                    data.release();
+                }
+            }
+        });
+    }
+    
+    // 回退方法：原始的所有副本并行写入逻辑
+    private CompletableFuture<Void> doWriteAllReplicas(WriteOptions options, String path, ByteBuf data) {
         AtomicInteger success = new AtomicInteger(0);
         AtomicInteger completed = new AtomicInteger(0);
         CompletableFuture<Void> result = new CompletableFuture<>();
+        
         for (AwsObjectStorage storage : storages) {
             ByteBuf copy = data.retainedDuplicate();
             storage.doWrite(options, path, copy).whenComplete((v, ex) -> {
@@ -53,14 +155,17 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
                         result.complete(null);
                     }
                 } finally {
-                    // 确保 ByteBuf 副本被释放
                     if (copy != null && copy.refCnt() > 0) {
                         copy.release();
                     }
-                    // 当所有操作都完成时，释放原始 ByteBuf
+                    // 只有最后一个完成的操作释放原始data
                     if (completed.incrementAndGet() == storages.size()) {
                         if (data != null && data.refCnt() > 0) {
                             data.release();
+                        }
+                        // 如果还没有完成结果，说明没有达到quorum
+                        if (!result.isDone()) {
+                            result.completeExceptionally(new RuntimeException("Failed to meet write quorum"));
                         }
                     }
                 }
@@ -174,10 +279,110 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
 
         @Override
         public CompletableFuture<Void> write(ByteBuf data) {
+            CompletableFuture<Void> result = new CompletableFuture<>();
+            
+            if (writers.size() < 2) {
+                // 如果writer数小于2，回退到原始逻辑
+                return writeAllWriters(data);
+            }
+            
+            // 第一阶段：尝试写入前2个writer
+            writeToPrimaryWriters(data, result);
+            
+            return result;
+        }
+        
+        private void writeToPrimaryWriters(ByteBuf data, CompletableFuture<Void> result) {
+            AtomicInteger primarySuccess = new AtomicInteger(0);
+            AtomicInteger primaryCompleted = new AtomicInteger(0);
+            
+            // 向前2个writer写入
+            for (int i = 0; i < Math.min(2, writers.size()); i++) {
+                ByteBuf copy = data.retainedDuplicate();
+                
+                writers.get(i).write(copy).whenComplete((v, ex) -> {
+                    try {
+                        if (ex == null) {
+                            int successCount = primarySuccess.incrementAndGet();
+                            if (successCount >= 2) {
+                                // 前2个writer都成功，释放原始数据并返回成功
+                                if (data.refCnt() > 0) {
+                                    data.release();
+                                }
+                                result.complete(null);
+                                return;
+                            }
+                        }
+                        
+                        // 检查前2个writer是否都完成了
+                        if (primaryCompleted.incrementAndGet() >= 2) {
+                            // 前2个writer完成，但没有2个都成功，尝试第3个writer
+                            if (!result.isDone() && writers.size() > 2) {
+                                writeToBackupWriter(data, primarySuccess.get(), result);
+                            } else if (!result.isDone()) {
+                                // 没有第3个writer，且前2个没有都成功，释放原始数据
+                                if (data.refCnt() > 0) {
+                                    data.release();
+                                }
+                                result.completeExceptionally(new RuntimeException("Primary writers write failed and no backup available"));
+                            }
+                        }
+                    } finally {
+                        // 释放ByteBuf副本
+                        if (copy != null && copy.refCnt() > 0) {
+                            copy.release();
+                        }
+                    }
+                });
+            }
+        }
+        
+        private void writeToBackupWriter(ByteBuf data, int primarySuccessCount, CompletableFuture<Void> result) {
+            if (writers.size() <= 2 || result.isDone()) {
+                // 如果没有备用writer或结果已完成，释放原始数据
+                if (data.refCnt() > 0) {
+                    data.release();
+                }
+                return;
+            }
+            
+            ByteBuf backupCopy = data.retainedDuplicate();
+            writers.get(2).write(backupCopy).whenComplete((v, ex) -> {
+                try {
+                    if (ex == null) {
+                        // 第3个writer成功，检查总成功数是否达到quorum
+                        if (primarySuccessCount + 1 >= quorumCount) {
+                            result.complete(null);
+                        } else {
+                            result.completeExceptionally(new RuntimeException("Insufficient successful writers"));
+                        }
+                    } else {
+                        // 第3个writer也失败
+                        if (primarySuccessCount >= quorumCount) {
+                            result.complete(null);
+                        } else {
+                            result.completeExceptionally(new RuntimeException("All writer writes failed to meet quorum"));
+                        }
+                    }
+                } finally {
+                    // 释放ByteBuf副本
+                    if (backupCopy != null && backupCopy.refCnt() > 0) {
+                        backupCopy.release();
+                    }
+                    // 释放原始数据
+                    if (data != null && data.refCnt() > 0) {
+                        data.release();
+                    }
+                }
+            });
+        }
+        
+        // 回退方法：原始的所有writer并行写入逻辑
+        private CompletableFuture<Void> writeAllWriters(ByteBuf data) {
             AtomicInteger success = new AtomicInteger(0);
             AtomicInteger completed = new AtomicInteger(0);
             CompletableFuture<Void> result = new CompletableFuture<>();
-
+            
             for (Writer writer : writers) {
                 ByteBuf copy = data.retainedDuplicate();
                 writer.write(copy).whenComplete((v, ex) -> {
@@ -186,11 +391,9 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
                             result.complete(null);
                         }
                     } finally {
-                        // 确保 ByteBuf 副本被释放
                         if (copy != null && copy.refCnt() > 0) {
                             copy.release();
                         }
-                        // 当所有操作都完成时，释放原始 ByteBuf
                         if (completed.incrementAndGet() == writers.size()) {
                             if (data != null && data.refCnt() > 0) {
                                 data.release();
