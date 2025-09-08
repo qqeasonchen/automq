@@ -136,7 +136,8 @@ public interface ObjectStorage {
         // timeout for one single network rpc
         private long apiCallAttemptTimeout = -1L;
         // timeout for the whole write operation
-        private long timeout = Long.MAX_VALUE;
+        //重试时间调整到10秒
+        private long timeout = 10*1000L;
         private short bucketId;
         private boolean enableFastRetry;
         // write context start
