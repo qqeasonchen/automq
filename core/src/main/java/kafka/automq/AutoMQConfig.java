@@ -226,6 +226,18 @@ public class AutoMQConfig {
     public static final String S3_WAL_IOPS_CONFIG = "s3.wal.iops";
     public static final String S3_WAL_IOPS_DOC = "[DEPRECATED]please use s3.wal.path. The max iops for S3 WAL.";
 
+    public static final String S3_WAL_QUORUM_ENABLED_CONFIG = "s3.wal.quorum.enabled";
+    public static final String S3_WAL_QUORUM_ENABLED_DOC = "Whether to enable quorum consensus for S3 WAL operations";
+
+    public static final String S3_WAL_QUORUM_SIZE_CONFIG = "s3.wal.quorum.size";
+    public static final String S3_WAL_QUORUM_SIZE_DOC = "Total number of replicas for quorum consensus";
+
+    public static final String S3_WAL_QUORUM_WRITE_SIZE_CONFIG = "s3.wal.quorum.write.size";
+    public static final String S3_WAL_QUORUM_WRITE_SIZE_DOC = "Number of replicas required for successful write quorum";
+
+    public static final String S3_WAL_QUORUM_READ_SIZE_CONFIG = "s3.wal.quorum.read.size";
+    public static final String S3_WAL_QUORUM_READ_SIZE_DOC = "Number of replicas required for successful read quorum";
+
     public static final String S3_METRICS_ENABLE_CONFIG = "s3.telemetry.metrics.enable";
     public static final String S3_METRICS_ENABLE_DOC = "[DEPRECATED] use s3.metrics.uri instead.";
 
@@ -298,6 +310,10 @@ public class AutoMQConfig {
             .define(AutoMQConfig.S3_WAL_CAPACITY_CONFIG, LONG, 2147483648L, MEDIUM, AutoMQConfig.S3_WAL_CAPACITY_DOC)
             .define(AutoMQConfig.S3_WAL_THREAD_CONFIG, INT, 8, MEDIUM, AutoMQConfig.S3_WAL_THREAD_DOC)
             .define(AutoMQConfig.S3_WAL_IOPS_CONFIG, INT, 3000, MEDIUM, AutoMQConfig.S3_WAL_IOPS_DOC)
+            .define(AutoMQConfig.S3_WAL_QUORUM_ENABLED_CONFIG, BOOLEAN, true, HIGH, AutoMQConfig.S3_WAL_QUORUM_ENABLED_DOC)
+            .define(AutoMQConfig.S3_WAL_QUORUM_SIZE_CONFIG, INT, 3, HIGH, AutoMQConfig.S3_WAL_QUORUM_SIZE_DOC)
+            .define(AutoMQConfig.S3_WAL_QUORUM_WRITE_SIZE_CONFIG, INT, 2, HIGH, AutoMQConfig.S3_WAL_QUORUM_WRITE_SIZE_DOC)
+            .define(AutoMQConfig.S3_WAL_QUORUM_READ_SIZE_CONFIG, INT, 1, HIGH, AutoMQConfig.S3_WAL_QUORUM_READ_SIZE_DOC)
             .define(AutoMQConfig.S3_TELEMETRY_OPS_ENABLED_CONFIG, BOOLEAN, true, HIGH, AutoMQConfig.S3_TELEMETRY_OPS_ENABLED_DOC)
             .define(AutoMQConfig.S3_METRICS_ENABLE_CONFIG, BOOLEAN, true, MEDIUM, AutoMQConfig.S3_METRICS_ENABLE_DOC)
             .define(AutoMQConfig.S3_TELEMETRY_METRICS_EXPORTER_TYPE_CONFIG, STRING, null, MEDIUM, AutoMQConfig.S3_TELEMETRY_METRICS_EXPORTER_TYPE_DOC)
@@ -315,6 +331,10 @@ public class AutoMQConfig {
     private String metricsExporterURI;
     private List<Pair<String, String>> baseLabels;
     private Optional<BucketURI> zoneRouterChannels;
+    private boolean walQuorumEnabled;
+    private int walQuorumSize;
+    private int walQuorumWriteSize;
+    private int walQuorumReadSize;
 
     public AutoMQConfig setup(KafkaConfig config) {
         dataBuckets = genDataBuckets(config);
@@ -323,6 +343,10 @@ public class AutoMQConfig {
         metricsExporterURI = genMetricsExporterURI(config);
         baseLabels = parseBaseLabels(config);
         zoneRouterChannels = genZoneRouterChannels(config);
+        walQuorumEnabled = config.getBoolean(S3_WAL_QUORUM_ENABLED_CONFIG);
+        walQuorumSize = config.getInt(S3_WAL_QUORUM_SIZE_CONFIG);
+        walQuorumWriteSize = config.getInt(S3_WAL_QUORUM_WRITE_SIZE_CONFIG);
+        walQuorumReadSize = config.getInt(S3_WAL_QUORUM_READ_SIZE_CONFIG);
         return this;
     }
 
@@ -348,6 +372,22 @@ public class AutoMQConfig {
 
     public Optional<BucketURI> zoneRouterChannels() {
         return zoneRouterChannels;
+    }
+
+    public boolean walQuorumEnabled() {
+        return walQuorumEnabled;
+    }
+
+    public int walQuorumSize() {
+        return walQuorumSize;
+    }
+
+    public int walQuorumWriteSize() {
+        return walQuorumWriteSize;
+    }
+
+    public int walQuorumReadSize() {
+        return walQuorumReadSize;
     }
 
     private static List<BucketURI> genDataBuckets(KafkaConfig config) {

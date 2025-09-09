@@ -43,6 +43,7 @@ public class StreamClientFactory {
             .buckets(streamConfig.dataBuckets())
             .tagging(streamConfig.objectTagging())
             .extension(EXTENSION_TYPE_KEY, EXTENSION_TYPE_BACKGROUND)
+            .config(streamConfig)
             .build();
         return StreamClient.builder()
             .streamConfig(streamConfig)

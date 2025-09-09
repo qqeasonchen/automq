@@ -53,6 +53,10 @@ public class ConfigUtils {
             .mockEnable(s.s3MockEnable())
             .networkBaselineBandwidth(s.s3NetworkBaselineBandwidthProp())
             .refillPeriodMs(s.s3RefillPeriodMsProp())
-            .objectRetentionTimeInSecond(s.s3ObjectDeleteRetentionTimeInSecond());
+            .objectRetentionTimeInSecond(s.s3ObjectDeleteRetentionTimeInSecond())
+            .walQuorumEnabled(config.walQuorumEnabled())
+            .walQuorumSize(config.walQuorumSize())
+            .walQuorumWriteSize(config.walQuorumWriteSize())
+            .walQuorumReadSize(config.walQuorumReadSize());
     }
 }

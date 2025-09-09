@@ -225,6 +225,7 @@ public class DefaultS3Client implements Client {
             .inboundLimiter(networkInboundLimiter)
             .outboundLimiter(networkOutboundLimiter)
             .threadPrefix("main")
+            .config(config)
             .build();
     }
 
@@ -237,6 +238,7 @@ public class DefaultS3Client implements Client {
             .inboundLimiter(networkInboundLimiter)
             .outboundLimiter(networkOutboundLimiter)
             .threadPrefix("background")
+            .config(config)
             .build();
     }
 

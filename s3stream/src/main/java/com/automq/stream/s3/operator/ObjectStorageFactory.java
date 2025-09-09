@@ -102,6 +102,7 @@ public class ObjectStorageFactory {
         private boolean checkS3ApiModel = false;
         private String threadPrefix = "";
         private final Map<String, Object> extensions = new HashMap<>();
+        private com.automq.stream.s3.Config config;
 
         Builder bucket(BucketURI bucketURI) {
             this.bucket = bucketURI;
@@ -114,7 +115,7 @@ public class ObjectStorageFactory {
 
         public Builder buckets(List<BucketURI> buckets) {
             this.buckets = buckets;
-            if (bucket == null && buckets.size() == 1) {
+            if (bucket == null && buckets.size() >= 1) {
                 bucket = buckets.get(0);
             }
             return this;
@@ -195,6 +196,15 @@ public class ObjectStorageFactory {
             return extensions;
         }
 
+        public Builder config(com.automq.stream.s3.Config config) {
+            this.config = config;
+            return this;
+        }
+
+        public com.automq.stream.s3.Config config() {
+            return config;
+        }
+
         public ObjectStorage build() {
             if (StringUtils.isEmpty(this.threadPrefix)) {
                 this.threadPrefix = Long.toString(defaultThreadPrefixCounter.getAndIncrement());
@@ -214,9 +224,7 @@ public class ObjectStorageFactory {
                         .threadPrefix(threadPrefix)
                         .build());
                 }
-                // quorum数可通过extension或其它方式传入，这里默认多数
-                int quorum = (int)Math.ceil(buckets.size() / 2.0);
-                objectStorage = new QuorumAwsObjectStorage(awsList, quorum);
+                objectStorage = new QuorumAwsObjectStorage(awsList, config);
             } else {
                 objectStorage = protocolHandlers.get(bucket.protocol()).apply(this);
             }

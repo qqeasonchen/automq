@@ -60,6 +60,10 @@ public class Config {
     private long objectRetentionTimeInSecond = 10 * 60; // 10min
     private boolean failoverEnable = false;
     private boolean snapshotReadEnable = false;
+    private boolean walQuorumEnabled = false;
+    private int walQuorumSize = 3;
+    private int walQuorumWriteSize = 2;
+    private int walQuorumReadSize = 1;
     private Supplier<Version> version = () -> {
         throw new UnsupportedOperationException();
     };
@@ -332,6 +336,42 @@ public class Config {
 
     public boolean snapshotReadEnable() {
         return snapshotReadEnable;
+    }
+
+    public boolean walQuorumEnabled() {
+        return walQuorumEnabled;
+    }
+
+    public Config walQuorumEnabled(boolean walQuorumEnabled) {
+        this.walQuorumEnabled = walQuorumEnabled;
+        return this;
+    }
+
+    public int walQuorumSize() {
+        return walQuorumSize;
+    }
+
+    public Config walQuorumSize(int walQuorumSize) {
+        this.walQuorumSize = walQuorumSize;
+        return this;
+    }
+
+    public int walQuorumWriteSize() {
+        return walQuorumWriteSize;
+    }
+
+    public Config walQuorumWriteSize(int walQuorumWriteSize) {
+        this.walQuorumWriteSize = walQuorumWriteSize;
+        return this;
+    }
+
+    public int walQuorumReadSize() {
+        return walQuorumReadSize;
+    }
+
+    public Config walQuorumReadSize(int walQuorumReadSize) {
+        this.walQuorumReadSize = walQuorumReadSize;
+        return this;
     }
 
     public Config version(Supplier<Version> version) {

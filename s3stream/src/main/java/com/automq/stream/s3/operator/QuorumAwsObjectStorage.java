@@ -8,17 +8,33 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class QuorumAwsObjectStorage implements ObjectStorage {
     private final List<AwsObjectStorage> storages;
-    private final int quorum;
+    private final com.automq.stream.s3.Config config;
+    private final int walQuorumSize;
+    private final int walQuorumWriteSize;
+    private final int walQuorumReadSize;
 
-    public QuorumAwsObjectStorage(List<AwsObjectStorage> storages, int quorum) {
+
+    public QuorumAwsObjectStorage(List<AwsObjectStorage> storages, com.automq.stream.s3.Config config) {
         if (storages == null || storages.isEmpty()) {
             throw new IllegalArgumentException("storages must not be empty");
         }
-        if (quorum < 1 || quorum > storages.size()) {
-            throw new IllegalArgumentException("quorum must be between 1 and storages.size()");
-        }
         this.storages = storages;
-        this.quorum = quorum;
+        this.config = config;
+
+        if (config != null) {
+            this.walQuorumSize = config.walQuorumSize();
+            this.walQuorumWriteSize = config.walQuorumWriteSize();
+            this.walQuorumReadSize = config.walQuorumReadSize();
+        } else {
+            //TODO metrics和WAL日志传递config配置待沟通合适实现方式
+            this.walQuorumSize = 3;
+            this.walQuorumWriteSize = 2;
+            this.walQuorumReadSize = 1;
+        }
+
+        if (walQuorumSize <= 0 || walQuorumSize < walQuorumWriteSize) {
+            throw new IllegalArgumentException("walQuorumSize must large than zero and walQuorumSize must large than walQuorumWriteSize");
+        }
     }
 
     @Override
@@ -26,7 +42,7 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
         AtomicInteger success = new AtomicInteger(0);
         for (AwsObjectStorage storage : storages) {
             if (storage.readinessCheck()) {
-                if (success.incrementAndGet() >= quorum) {
+                if (success.incrementAndGet() >= walQuorumWriteSize) {
                     return true;
                 }
             }
@@ -44,31 +60,32 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
     // 1. doWrite: 2+1优化写入策略 - 优先写前2个副本，成功则不写第3个
     public CompletableFuture<Void> doWrite(WriteOptions options, String path, ByteBuf data) {
         CompletableFuture<Void> result = new CompletableFuture<>();
-        
+
         if (storages.size() < 2) {
             // 如果副本数小于2，回退到原始逻辑
             return doWriteAllReplicas(options, path, data);
         }
-        
+
         // 第一阶段：尝试写入前2个副本
         writeToPrimaryReplicas(options, path, data, result);
-        
+
         return result;
     }
-    
+
     private void writeToPrimaryReplicas(WriteOptions options, String path, ByteBuf data, CompletableFuture<Void> result) {
         AtomicInteger primarySuccess = new AtomicInteger(0);
         AtomicInteger primaryCompleted = new AtomicInteger(0);
-        
+
         // 向前2个副本写入
-        for (int i = 0; i < Math.min(2, storages.size()); i++) {
+        for (int i = 0; i < Math.min(walQuorumWriteSize, storages.size()); i++) {
             ByteBuf copy = data.retainedDuplicate();
-            
+
+            int finalI = i;
             storages.get(i).doWrite(options, path, copy).whenComplete((v, ex) -> {
                 try {
                     if (ex == null) {
                         int successCount = primarySuccess.incrementAndGet();
-                        if (successCount >= 2) {
+                        if (successCount >= walQuorumWriteSize) {
                             // 前2个副本都成功，释放原始data并返回成功
                             if (data.refCnt() > 0) {
                                 data.release();
@@ -77,12 +94,12 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
                             return;
                         }
                     }
-                    
+
                     // 检查前2个副本是否都完成了
-                    if (primaryCompleted.incrementAndGet() >= 2) {
+                    if (primaryCompleted.incrementAndGet() >= walQuorumWriteSize) {
                         // 前2个副本完成，但没有2个都成功，尝试第3个副本
-                        if (!result.isDone() && storages.size() > 2) {
-                            writeToBackupReplica(options, path, data, primarySuccess.get(), result);
+                        if (!result.isDone() && storages.size() > walQuorumWriteSize) {
+                            writeToBackupReplica(options, path, data, primarySuccess.get(), result, finalI);
                         } else if (!result.isDone()) {
                             // 没有第3个副本，且前2个没有都成功，释放原始data
                             if (data.refCnt() > 0) {
@@ -100,29 +117,29 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
             });
         }
     }
-    
-    private void writeToBackupReplica(WriteOptions options, String path, ByteBuf data, int primarySuccessCount, CompletableFuture<Void> result) {
-        if (storages.size() <= 2 || result.isDone()) {
+
+    private void writeToBackupReplica(WriteOptions options, String path, ByteBuf data, int primarySuccessCount, CompletableFuture<Void> result, int index) {
+        if (storages.size() <= walQuorumWriteSize || result.isDone()) {
             // 如果没有备用副本或结果已完成，释放原始数据
             if (data.refCnt() > 0) {
                 data.release();
             }
             return;
         }
-        
+
         ByteBuf backupCopy = data.retainedDuplicate();
-        storages.get(2).doWrite(options, path, backupCopy).whenComplete((v, ex) -> {
+        storages.get(index+1).doWrite(options, path, backupCopy).whenComplete((v, ex) -> {
             try {
                 if (ex == null) {
                     // 第3个副本成功，检查总成功数是否达到quorum
-                    if (primarySuccessCount + 1 >= quorum) {
+                    if (primarySuccessCount + 1 >= walQuorumWriteSize) {
                         result.complete(null);
                     } else {
                         result.completeExceptionally(new RuntimeException("Insufficient successful replicas"));
                     }
                 } else {
                     // 第3个副本也失败
-                    if (primarySuccessCount >= quorum) {
+                    if (primarySuccessCount >= walQuorumWriteSize) {
                         result.complete(null);
                     } else {
                         result.completeExceptionally(new RuntimeException("All replica writes failed to meet quorum"));
@@ -140,18 +157,18 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
             }
         });
     }
-    
+
     // 回退方法：原始的所有副本并行写入逻辑
     private CompletableFuture<Void> doWriteAllReplicas(WriteOptions options, String path, ByteBuf data) {
         AtomicInteger success = new AtomicInteger(0);
         AtomicInteger completed = new AtomicInteger(0);
         CompletableFuture<Void> result = new CompletableFuture<>();
-        
+
         for (AwsObjectStorage storage : storages) {
             ByteBuf copy = data.retainedDuplicate();
             storage.doWrite(options, path, copy).whenComplete((v, ex) -> {
                 try {
-                    if (ex == null && success.incrementAndGet() >= quorum) {
+                    if (ex == null && success.incrementAndGet() >= walQuorumWriteSize) {
                         result.complete(null);
                     }
                 } finally {
@@ -201,7 +218,7 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
         CompletableFuture<Void> result = new CompletableFuture<>();
         for (AwsObjectStorage storage : storages) {
             storage.doDeleteObjects(objectKeys).whenComplete((v, ex) -> {
-                if (ex == null && success.incrementAndGet() >= quorum) {
+                if (ex == null && success.incrementAndGet() >= walQuorumWriteSize) {
                     result.complete(null);
                 }
             });
@@ -263,6 +280,18 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
         return storages.get(0).bucketId();
     }
 
+    public int getWalQuorumSize() {
+        return walQuorumSize;
+    }
+
+    public int getWalQuorumWriteSize() {
+        return walQuorumWriteSize;
+    }
+
+    public int getWalQuorumReadSize() {
+        return walQuorumReadSize;
+    }
+
     // 兼容ObjectStorage接口的write方法
     @Override
     public CompletableFuture<WriteResult> write(WriteOptions options, String objectPath, ByteBuf buf) {
@@ -271,7 +300,7 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
 
     class QuorumWriter implements Writer {
         private final List<Writer> writers;
-        private final int quorumCount = quorum;
+        private final int quorumCount = walQuorumWriteSize;
 
         public QuorumWriter(List<Writer> writers) {
             this.writers = writers;
@@ -280,31 +309,32 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
         @Override
         public CompletableFuture<Void> write(ByteBuf data) {
             CompletableFuture<Void> result = new CompletableFuture<>();
-            
-            if (writers.size() < 2) {
+
+            if (writers.size() < quorumCount) {
                 // 如果writer数小于2，回退到原始逻辑
                 return writeAllWriters(data);
             }
-            
+
             // 第一阶段：尝试写入前2个writer
             writeToPrimaryWriters(data, result);
-            
+
             return result;
         }
-        
+
         private void writeToPrimaryWriters(ByteBuf data, CompletableFuture<Void> result) {
             AtomicInteger primarySuccess = new AtomicInteger(0);
             AtomicInteger primaryCompleted = new AtomicInteger(0);
-            
+
             // 向前2个writer写入
-            for (int i = 0; i < Math.min(2, writers.size()); i++) {
+            for (int i = 0; i < Math.min(quorumCount, writers.size()); i++) {
                 ByteBuf copy = data.retainedDuplicate();
-                
+
+                int finalI = i;
                 writers.get(i).write(copy).whenComplete((v, ex) -> {
                     try {
                         if (ex == null) {
                             int successCount = primarySuccess.incrementAndGet();
-                            if (successCount >= 2) {
+                            if (successCount >= quorumCount) {
                                 // 前2个writer都成功，释放原始数据并返回成功
                                 if (data.refCnt() > 0) {
                                     data.release();
@@ -313,12 +343,12 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
                                 return;
                             }
                         }
-                        
+
                         // 检查前2个writer是否都完成了
-                        if (primaryCompleted.incrementAndGet() >= 2) {
+                        if (primaryCompleted.incrementAndGet() >= quorumCount) {
                             // 前2个writer完成，但没有2个都成功，尝试第3个writer
-                            if (!result.isDone() && writers.size() > 2) {
-                                writeToBackupWriter(data, primarySuccess.get(), result);
+                            if (!result.isDone() && writers.size() > quorumCount) {
+                                writeToBackupWriter(data, primarySuccess.get(), result, finalI);
                             } else if (!result.isDone()) {
                                 // 没有第3个writer，且前2个没有都成功，释放原始数据
                                 if (data.refCnt() > 0) {
@@ -336,18 +366,18 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
                 });
             }
         }
-        
-        private void writeToBackupWriter(ByteBuf data, int primarySuccessCount, CompletableFuture<Void> result) {
-            if (writers.size() <= 2 || result.isDone()) {
+
+        private void writeToBackupWriter(ByteBuf data, int primarySuccessCount, CompletableFuture<Void> result, int index) {
+            if (writers.size() <= quorumCount || result.isDone()) {
                 // 如果没有备用writer或结果已完成，释放原始数据
                 if (data.refCnt() > 0) {
                     data.release();
                 }
                 return;
             }
-            
+
             ByteBuf backupCopy = data.retainedDuplicate();
-            writers.get(2).write(backupCopy).whenComplete((v, ex) -> {
+            writers.get(index + 1).write(backupCopy).whenComplete((v, ex) -> {
                 try {
                     if (ex == null) {
                         // 第3个writer成功，检查总成功数是否达到quorum
@@ -376,13 +406,13 @@ public class QuorumAwsObjectStorage implements ObjectStorage {
                 }
             });
         }
-        
+
         // 回退方法：原始的所有writer并行写入逻辑
         private CompletableFuture<Void> writeAllWriters(ByteBuf data) {
             AtomicInteger success = new AtomicInteger(0);
             AtomicInteger completed = new AtomicInteger(0);
             CompletableFuture<Void> result = new CompletableFuture<>();
-            
+
             for (Writer writer : writers) {
                 ByteBuf copy = data.retainedDuplicate();
                 writer.write(copy).whenComplete((v, ex) -> {
