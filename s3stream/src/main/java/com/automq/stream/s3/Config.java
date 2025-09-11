@@ -64,6 +64,8 @@ public class Config {
     private int walQuorumSize = 3;
     private int walQuorumWriteSize = 2;
     private int walQuorumReadSize = 1;
+    private int walQuorumRetryCount = 3;
+    private long walQuorumIsolationDurationMs = 300000L; // 5 minutes
     private Supplier<Version> version = () -> {
         throw new UnsupportedOperationException();
     };
@@ -371,6 +373,24 @@ public class Config {
 
     public Config walQuorumReadSize(int walQuorumReadSize) {
         this.walQuorumReadSize = walQuorumReadSize;
+        return this;
+    }
+
+    public int walQuorumRetryCount() {
+        return walQuorumRetryCount;
+    }
+
+    public Config walQuorumRetryCount(int walQuorumRetryCount) {
+        this.walQuorumRetryCount = walQuorumRetryCount;
+        return this;
+    }
+
+    public long walQuorumIsolationDurationMs() {
+        return walQuorumIsolationDurationMs;
+    }
+
+    public Config walQuorumIsolationDurationMs(long walQuorumIsolationDurationMs) {
+        this.walQuorumIsolationDurationMs = walQuorumIsolationDurationMs;
         return this;
     }
 

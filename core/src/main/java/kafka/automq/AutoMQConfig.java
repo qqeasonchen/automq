@@ -238,6 +238,12 @@ public class AutoMQConfig {
     public static final String S3_WAL_QUORUM_READ_SIZE_CONFIG = "s3.wal.quorum.read.size";
     public static final String S3_WAL_QUORUM_READ_SIZE_DOC = "Number of replicas required for successful read quorum";
 
+    public static final String S3_WAL_QUORUM_RETRY_COUNT_CONFIG = "s3.wal.quorum.retry.count";
+    public static final String S3_WAL_QUORUM_RETRY_COUNT_DOC = "Number of retries for quorum operations before giving up";
+
+    public static final String S3_WAL_QUORUM_ISOLATION_DURATION_MS_CONFIG = "s3.wal.quorum.isolation.duration.ms";
+    public static final String S3_WAL_QUORUM_ISOLATION_DURATION_MS_DOC = "Duration in milliseconds to isolate failed S3 nodes";
+
     public static final String S3_METRICS_ENABLE_CONFIG = "s3.telemetry.metrics.enable";
     public static final String S3_METRICS_ENABLE_DOC = "[DEPRECATED] use s3.metrics.uri instead.";
 
@@ -314,6 +320,8 @@ public class AutoMQConfig {
             .define(AutoMQConfig.S3_WAL_QUORUM_SIZE_CONFIG, INT, 3, HIGH, AutoMQConfig.S3_WAL_QUORUM_SIZE_DOC)
             .define(AutoMQConfig.S3_WAL_QUORUM_WRITE_SIZE_CONFIG, INT, 2, HIGH, AutoMQConfig.S3_WAL_QUORUM_WRITE_SIZE_DOC)
             .define(AutoMQConfig.S3_WAL_QUORUM_READ_SIZE_CONFIG, INT, 1, HIGH, AutoMQConfig.S3_WAL_QUORUM_READ_SIZE_DOC)
+            .define(AutoMQConfig.S3_WAL_QUORUM_RETRY_COUNT_CONFIG, INT, 3, HIGH, AutoMQConfig.S3_WAL_QUORUM_RETRY_COUNT_DOC)
+            .define(AutoMQConfig.S3_WAL_QUORUM_ISOLATION_DURATION_MS_CONFIG, LONG, 300000L, HIGH, AutoMQConfig.S3_WAL_QUORUM_ISOLATION_DURATION_MS_DOC)
             .define(AutoMQConfig.S3_TELEMETRY_OPS_ENABLED_CONFIG, BOOLEAN, true, HIGH, AutoMQConfig.S3_TELEMETRY_OPS_ENABLED_DOC)
             .define(AutoMQConfig.S3_METRICS_ENABLE_CONFIG, BOOLEAN, true, MEDIUM, AutoMQConfig.S3_METRICS_ENABLE_DOC)
             .define(AutoMQConfig.S3_TELEMETRY_METRICS_EXPORTER_TYPE_CONFIG, STRING, null, MEDIUM, AutoMQConfig.S3_TELEMETRY_METRICS_EXPORTER_TYPE_DOC)
@@ -335,6 +343,8 @@ public class AutoMQConfig {
     private int walQuorumSize;
     private int walQuorumWriteSize;
     private int walQuorumReadSize;
+    private int walQuorumRetryCount;
+    private long walQuorumIsolationDurationMs;
 
     public AutoMQConfig setup(KafkaConfig config) {
         dataBuckets = genDataBuckets(config);
@@ -347,6 +357,8 @@ public class AutoMQConfig {
         walQuorumSize = config.getInt(S3_WAL_QUORUM_SIZE_CONFIG);
         walQuorumWriteSize = config.getInt(S3_WAL_QUORUM_WRITE_SIZE_CONFIG);
         walQuorumReadSize = config.getInt(S3_WAL_QUORUM_READ_SIZE_CONFIG);
+        walQuorumRetryCount = config.getInt(S3_WAL_QUORUM_RETRY_COUNT_CONFIG);
+        walQuorumIsolationDurationMs = config.getLong(S3_WAL_QUORUM_ISOLATION_DURATION_MS_CONFIG);
         return this;
     }
 
@@ -388,6 +400,14 @@ public class AutoMQConfig {
 
     public int walQuorumReadSize() {
         return walQuorumReadSize;
+    }
+
+    public int walQuorumRetryCount() {
+        return walQuorumRetryCount;
+    }
+
+    public long walQuorumIsolationDurationMs() {
+        return walQuorumIsolationDurationMs;
     }
 
     private static List<BucketURI> genDataBuckets(KafkaConfig config) {

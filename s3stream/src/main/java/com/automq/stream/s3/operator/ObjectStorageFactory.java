@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
@@ -212,7 +213,7 @@ public class ObjectStorageFactory {
             ObjectStorage objectStorage;
             if (buckets != null && buckets.size() > 1) {
                 // 多S3/bucket场景，自动创建QuorumAwsObjectStorage
-                List<AwsObjectStorage> awsList = new ArrayList<>();
+                List<AwsObjectStorage> awsList = new CopyOnWriteArrayList<>();
                 for (BucketURI uri : buckets) {
                     awsList.add(AwsObjectStorage.builder()
                         .bucket(uri)

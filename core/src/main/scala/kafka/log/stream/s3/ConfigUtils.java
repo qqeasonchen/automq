@@ -57,6 +57,8 @@ public class ConfigUtils {
             .walQuorumEnabled(config.walQuorumEnabled())
             .walQuorumSize(config.walQuorumSize())
             .walQuorumWriteSize(config.walQuorumWriteSize())
-            .walQuorumReadSize(config.walQuorumReadSize());
+            .walQuorumReadSize(config.walQuorumReadSize())
+            .walQuorumRetryCount(config.walQuorumRetryCount())
+            .walQuorumIsolationDurationMs(config.walQuorumIsolationDurationMs());
     }
 }
