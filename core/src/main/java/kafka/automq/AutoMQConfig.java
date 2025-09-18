@@ -145,8 +145,8 @@ public class AutoMQConfig {
     public static final String S3_MOCK_ENABLE_DOC = "The S3 mock enable flag, replace all S3 related module with memory-mocked implement.";
 
     public static final String S3_OBJECT_DELETION_MINUTES_CONFIG = "s3.object.delete.retention.minutes";
-    public static final String S3_OBJECT_DELETION_MINUTES_DOC = "The marked-for-deletion S3 object retention time in minutes, default is 10 minutes (600s).";
-    public static final long S3_OBJECT_DELETE_RETENTION_MINUTES = 1; // 1min
+    public static final String S3_OBJECT_DELETION_MINUTES_DOC = "The marked-for-deletion S3 object retention time in minutes, default is 60 minutes (1 hour).";
+    public static final long S3_OBJECT_DELETE_RETENTION_MINUTES = 60; // 60min (1 hour)
 
     public static final String S3_OBJECT_LOG_ENABLE_CONFIG = "s3.object.log.enable";
     public static final String S3_OBJECT_LOG_ENABLE_DOC = "Whether to enable S3 object trace log.";
