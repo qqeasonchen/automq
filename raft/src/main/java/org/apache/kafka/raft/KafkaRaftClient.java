@@ -430,7 +430,8 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
         }
     }
 
-    private Optional<SnapshotReader<T>> latestSnapshot() {
+    public Optional<SnapshotReader<T>> latestSnapshot() {
+        //TODO:: nicochen log.latestSnapshot()恢复时从最新snapshot改成从备份s3集群的备份snapshot读取
         return log.latestSnapshot().map(reader ->
             RecordsSnapshotReader.of(reader,
                 serde,
