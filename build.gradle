@@ -1279,7 +1279,7 @@ project(':core') {
     from(project(':tools:tools-api').configurations.runtimeClasspath) { into("libs/") }
     duplicatesStrategy 'exclude'
   }
-  
+
   // AutoMQ inject start
   tasks.create(name: "releaseE2ETar", dependsOn: [configurations.archives.artifacts, 'copyDependantTestLibs'], type: Tar) {
     def prefix = project.findProperty('prefix') ?: ''
@@ -1385,7 +1385,10 @@ project(':metadata') {
     implementation libs.zstd
     implementation libs.guava
     implementation libs.awsSdkAuth
-    implementation project(':s3stream')
+    api project(':s3stream')
+
+    implementation libs.awsSdk
+    implementation libs.awsSdkNetty
 
     implementation libs.jacksonDatabind
     implementation libs.jacksonJDK8Datatypes

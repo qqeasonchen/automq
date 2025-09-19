@@ -225,6 +225,13 @@ public interface RaftClient<T> extends AutoCloseable {
     Optional<OffsetAndEpoch> latestSnapshotId();
 
     /**
+     * nicolchen
+     * 获取最新完整snapshot对象
+     * @return
+     */
+    Optional<SnapshotReader<T>> latestSnapshot();
+
+    /**
      * Returns the current end of the log. This method is thread-safe.
      *
      * @return the log end offset, which is one greater than the offset of the last record written,

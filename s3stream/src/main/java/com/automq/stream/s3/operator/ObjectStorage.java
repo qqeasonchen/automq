@@ -83,7 +83,7 @@ public interface ObjectStorage {
 
     short bucketId();
 
-    class ObjectPath {
+    public class ObjectPath {
         private final short bucketId;
         private final String key;
 
@@ -109,7 +109,7 @@ public interface ObjectStorage {
         }
     }
 
-    class ObjectInfo extends ObjectPath {
+    public class ObjectInfo extends ObjectPath {
         private final long timestamp;
         private final long size;
 
@@ -128,7 +128,7 @@ public interface ObjectStorage {
         }
     }
 
-    class WriteOptions {
+    public class WriteOptions {
         public static final WriteOptions DEFAULT = new WriteOptions();
 
         private ThrottleStrategy throttleStrategy = ThrottleStrategy.BYPASS;
@@ -246,7 +246,7 @@ public interface ObjectStorage {
         }
     }
 
-    class ReadOptions {
+    public class ReadOptions {
         public static final short UNSET_BUCKET = (short) -2;
 
         private ThrottleStrategy throttleStrategy = ThrottleStrategy.BYPASS;
@@ -282,7 +282,7 @@ public interface ObjectStorage {
         }
     }
 
-    class WriteResult {
+    public class WriteResult {
         private final short bucket;
 
         public WriteResult(short bucket) {

@@ -123,7 +123,7 @@ public final class S3ObjectsImage extends AbstractReferenceCounted {
         return registryRef.inLock(() -> objects.size(registryRef.epoch()));
     }
 
-    Collection<S3Object> objects() {
+    public Collection<S3Object> objects() {
         if (objects == null || registryRef == RegistryRef.NOOP) {
             return Collections.emptyList();
         }
@@ -131,7 +131,7 @@ public final class S3ObjectsImage extends AbstractReferenceCounted {
         return registryRef.inLock(() -> new LinkedList<>(objects.values(registryRef.epoch())));
     }
 
-    TimelineHashMap<Long, S3Object> timelineObjects() {
+    public TimelineHashMap<Long, S3Object> timelineObjects() {
         return objects;
     }
 

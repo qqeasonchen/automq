@@ -87,6 +87,28 @@ public class ObjectStorageFactory {
         return instance;
     }
 
+    /**
+     * Create an ObjectStorage instance mimicking the behavior of DefaultS3Client#newMainObjectStorage.
+     * This method creates a main-type ObjectStorage with appropriate configurations for production use.
+     *
+     * @param dataBuckets List of data buckets from AutoMQ configuration
+     * @param objectTagging Object tagging configuration for S3 objects
+     * @return ObjectStorage instance configured like DefaultS3Client's main ObjectStorage, or null if no buckets are configured
+     */
+    public static ObjectStorage createMainObjectStorage(List<BucketURI> dataBuckets, Map<String, String> objectTagging) {
+        if (dataBuckets == null || dataBuckets.isEmpty()) {
+            return null;
+        }
+
+        return ObjectStorageFactory.instance().builder()
+            .buckets(dataBuckets)
+            .tagging(objectTagging)
+            .extension(EXTENSION_TYPE_KEY, EXTENSION_TYPE_MAIN)
+            .readWriteIsolate(true)
+            .threadPrefix("snapshot-verifier")
+            .build();
+    }
+
     public class Builder {
         private final AtomicLong defaultThreadPrefixCounter = new AtomicLong();
         private BucketURI bucket;

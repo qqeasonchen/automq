@@ -17,6 +17,7 @@
 
 package kafka.server
 
+import kafka.log.stream.s3.ConfigUtils
 import kafka.log.stream.s3.telemetry.TelemetryManager
 import kafka.raft.KafkaRaftManager
 import kafka.server.Server.MetricsPrefix
@@ -40,6 +41,8 @@ import org.apache.kafka.server.ProcessRole
 import org.apache.kafka.server.common.ApiMessageAndVersion
 import org.apache.kafka.server.fault.{FaultHandler, LoggingFaultHandler, ProcessTerminatingFaultHandler}
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
+
+import com.automq.stream.s3.operator.{BucketURI, ObjectStorage, ObjectStorageFactory}
 
 import java.net.InetSocketAddress
 import java.util.Arrays
@@ -115,7 +118,7 @@ class SharedServer(
   ElasticStreamSwitch.setSwitch(sharedServerConfig.elasticStreamEnabled)
   @volatile var telemetryManager: TelemetryManager = _
   // AutoMQ for Kafka injection end
-  
+
   @volatile var metrics: Metrics = _metrics
   @volatile var raftManager: KafkaRaftManager[ApiMessageAndVersion] = _
   @volatile var brokerMetrics: BrokerServerMetrics = _
@@ -284,7 +287,7 @@ class SharedServer(
         if (sharedServerConfig.processRoles.contains(ProcessRole.ControllerRole)) {
           controllerServerMetrics = new ControllerMetadataMetrics(Optional.of(KafkaYammerMetrics.defaultRegistry()))
         }
-        
+
         // AutoMQ inject start
         telemetryManager = buildTelemetryManager(sharedServerConfig, clusterId)
         telemetryManager.init()
@@ -327,11 +330,19 @@ class SharedServer(
           setHighWaterMarkAccessor(() => _raftManager.client.highWatermark()).
           setMetrics(metadataLoaderMetrics)
         loader = loaderBuilder.build()
+        // Extract bucket name from AutoMQConfig S3_DATA_BUCKETS_CONFIG and create ObjectStorage
+        // Mimic the approach used in DefaultS3Client#newMainObjectStorage
+        val autoMQConfig = sharedServerConfig.automq
+        val dataBuckets = autoMQConfig.dataBuckets()
+        val s3Config = ConfigUtils.to(sharedServerConfig)
+        val objectStorage = ObjectStorageFactory.createMainObjectStorage(dataBuckets, s3Config.objectTagging())
         snapshotEmitter = new SnapshotEmitter.Builder().
           setNodeId(nodeId).
           setRaftClient(_raftManager.client).
           setMetrics(new SnapshotEmitterMetrics(
             Optional.of(KafkaYammerMetrics.defaultRegistry()), time)).
+          setBucketName(dataBuckets.get(0).bucket()).
+          setObjectStorage(objectStorage).
           build()
         snapshotGenerator = new SnapshotGenerator.Builder(snapshotEmitter).
           setNodeId(nodeId).
