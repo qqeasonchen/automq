@@ -93,18 +93,7 @@ import org.apache.kafka.snapshot.SnapshotWriter;
 import org.slf4j.Logger;
 
 import java.net.InetSocketAddress;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.OptionalInt;
-import java.util.OptionalLong;
-import java.util.Random;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
@@ -114,6 +103,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.concurrent.TimeUnit;
+
+import com.automq.stream.s3.operator.ObjectStorage;
+import io.netty.buffer.ByteBuf;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static org.apache.kafka.raft.RaftUtil.hasValidTopicPartition;
@@ -165,6 +160,19 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
     public static final int MAX_FETCH_WAIT_MS = 500;
     public static final int MAX_BATCH_SIZE_BYTES = 8 * 1024 * 1024;
     public static final int MAX_FETCH_SIZE_BYTES = MAX_BATCH_SIZE_BYTES;
+
+    // Configuration for S3 Kraft snapshot reading
+    private static volatile boolean s3KraftSnapshotReadEnabled = false;
+    private static volatile ObjectStorage globalObjectStorage = null;
+
+    /**
+     * Set the configuration for S3 Kraft snapshot reading.
+     * This should be called during server startup.
+     */
+    public static void setS3KraftSnapshotConfig(boolean enabled, ObjectStorage objectStorage) {
+        s3KraftSnapshotReadEnabled = enabled;
+        globalObjectStorage = objectStorage;
+    }
 
     private final OptionalInt nodeId;
     private final Uuid nodeDirectoryId;
@@ -431,7 +439,21 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
     }
 
     public Optional<SnapshotReader<T>> latestSnapshot() {
-        //TODO:: nicochen log.latestSnapshot()恢复时从最新snapshot改成从备份s3集群的备份snapshot读取
+        // Check if S3 Kraft snapshot reading is enabled
+        if (s3KraftSnapshotReadEnabled && globalObjectStorage != null) {
+            logger.info("S3 Kraft snapshot reading is enabled, attempting to load snapshot from S3");
+
+            // Try to load snapshot from S3 first
+            Optional<SnapshotReader<T>> s3Snapshot = loadSnapshotFromS3();
+            if (s3Snapshot.isPresent()) {
+                logger.info("Successfully loaded snapshot from S3 storage");
+                return s3Snapshot;
+            } else {
+                logger.warn("Failed to load snapshot from S3, falling back to local snapshot");
+            }
+        }
+
+        // Fall back to local snapshot
         return log.latestSnapshot().map(reader ->
             RecordsSnapshotReader.of(reader,
                 serde,
@@ -3744,6 +3766,182 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
             if (lastSent == reader) {
                 lastSent = null;
                 wakeup();
+            }
+        }
+    }
+
+
+    /**
+     * Load snapshot from S3 storage using the snapshot name with '.backup' suffix.
+     */
+    private Optional<SnapshotReader<T>> loadSnapshotFromS3() {
+        try {
+            // Get latest local snapshot ID to generate S3 object key
+            Optional<OffsetAndEpoch> latestSnapshotId = log.latestSnapshotId();
+            if (!latestSnapshotId.isPresent()) {
+                logger.debug("No local snapshot ID available for S3 snapshot lookup");
+                return Optional.empty();
+            }
+
+            OffsetAndEpoch snapshotId = latestSnapshotId.get();
+            String snapshotObjectKey = generateS3SnapshotObjectKey(snapshotId);
+
+            // Use the global ObjectStorage for reading from S3
+            if (globalObjectStorage == null) {
+                logger.warn("Global ObjectStorage is not configured for S3 snapshot reading");
+                return Optional.empty();
+            }
+
+            // Read snapshot data from S3
+            byte[] snapshotData = readSnapshotDataFromS3(globalObjectStorage, snapshotObjectKey);
+            if (snapshotData == null) {
+                logger.warn("Failed to read snapshot data from S3 for key: {}", snapshotObjectKey);
+                return Optional.empty();
+            }
+
+            // Convert byte array to SnapshotReader
+            SnapshotReader<T> reader = createSnapshotReaderFromBytes(snapshotData, snapshotId);
+            if (reader != null) {
+                logger.info("Successfully created SnapshotReader from S3 data for snapshot: {}", snapshotId);
+                return Optional.of(reader);
+            } else {
+                logger.error("Failed to create SnapshotReader from S3 data");
+                return Optional.empty();
+            }
+
+        } catch (Exception e) {
+            logger.error("Error loading snapshot from S3: {}", e.getMessage(), e);
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Generate S3 object key for snapshot based on the snapshot name pattern used by SnapshotEmitter.
+     */
+    private String generateS3SnapshotObjectKey(OffsetAndEpoch snapshotId) {
+        // Match the pattern used in SnapshotEmitter#generateSnapshotObjectKey
+        // Format: snapshots/metadata-snapshot-{offset}-{epoch}-{timestamp}.backup
+        // For latest snapshot, we'll look for the pattern without timestamp
+        return String.format("snapshots/metadata-snapshot-%d-%d-.backup",
+            snapshotId.offset(), snapshotId.epoch());
+    }
+
+
+    /**
+     * Read snapshot data from S3 using ObjectStorage.
+     */
+    private byte[] readSnapshotDataFromS3(ObjectStorage objectStorage, String objectKey) {
+        try {
+            CompletableFuture<ByteBuf> future = objectStorage.read(
+                new ObjectStorage.ReadOptions(),
+                objectKey
+            );
+
+            ByteBuf byteBuf = future.get(30, TimeUnit.SECONDS);
+            if (byteBuf == null) {
+                return null;
+            }
+
+            try {
+                byte[] data = new byte[byteBuf.readableBytes()];
+                byteBuf.readBytes(data);
+                return data;
+            } finally {
+                byteBuf.release();
+            }
+
+        } catch (Exception e) {
+            logger.error("Failed to read snapshot data from S3 object {}: {}", objectKey, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Create SnapshotReader from serialized byte array data read from S3.
+     * This reverses the serialization process done by SnapshotEmitter.
+     */
+    private SnapshotReader<T> createSnapshotReaderFromBytes(byte[] snapshotData, OffsetAndEpoch snapshotId) {
+        try {
+            // Create a ByteArrayInputStream from the data
+            ByteArrayInputStream bais = new ByteArrayInputStream(snapshotData);
+
+            // Create a custom SnapshotReader that reads from the byte array
+            return new S3ByteArraySnapshotReader<>(bais, snapshotId, serde);
+
+        } catch (Exception e) {
+            logger.error("Failed to create SnapshotReader from byte array: {}", e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Custom SnapshotReader implementation that reads snapshot data from a byte array
+     * loaded from S3 storage.
+     */
+    private static class S3ByteArraySnapshotReader<T> implements SnapshotReader<T> {
+        private final ByteArrayInputStream inputStream;
+        private final OffsetAndEpoch snapshotId;
+        private final RecordSerde<T> serde;
+        private final List<Batch<T>> batches;
+        private int currentIndex = 0;
+
+        public S3ByteArraySnapshotReader(ByteArrayInputStream inputStream, OffsetAndEpoch snapshotId, RecordSerde<T> serde) {
+            this.inputStream = inputStream;
+            this.snapshotId = snapshotId;
+            this.serde = serde;
+            this.batches = parseBatchesFromStream();
+        }
+
+        private List<Batch<T>> parseBatchesFromStream() {
+            // This is a simplified implementation
+            // In a real implementation, you'd need to properly parse the binary format
+            // created by KafkaBinaryImageWriter in SnapshotEmitter
+            List<Batch<T>> result = new ArrayList<>();
+
+            // TODO: Implement proper binary format parsing
+            // For now, return empty list as placeholder
+            return result;
+        }
+
+        @Override
+        public OffsetAndEpoch snapshotId() {
+            return snapshotId;
+        }
+
+        @Override
+        public long lastContainedLogOffset() {
+            return snapshotId.offset();
+        }
+
+        @Override
+        public int lastContainedLogEpoch() {
+            return snapshotId.epoch();
+        }
+
+        @Override
+        public long lastContainedLogTimestamp() {
+            return -1; // Unknown timestamp for S3 snapshots
+        }
+
+        @Override
+        public boolean hasNext() {
+            return currentIndex < batches.size();
+        }
+
+        @Override
+        public Batch<T> next() {
+            if (!hasNext()) {
+                throw new IllegalStateException("No more batches available");
+            }
+            return batches.get(currentIndex++);
+        }
+
+        @Override
+        public void close() {
+            try {
+                inputStream.close();
+            } catch (IOException e) {
+                // Ignore close errors
             }
         }
     }

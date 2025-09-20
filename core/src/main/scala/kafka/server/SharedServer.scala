@@ -42,7 +42,8 @@ import org.apache.kafka.server.common.ApiMessageAndVersion
 import org.apache.kafka.server.fault.{FaultHandler, LoggingFaultHandler, ProcessTerminatingFaultHandler}
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
 
-import com.automq.stream.s3.operator.{BucketURI, ObjectStorage, ObjectStorageFactory}
+import com.automq.stream.s3.operator.ObjectStorageFactory
+import org.apache.kafka.raft.KafkaRaftClient
 
 import java.net.InetSocketAddress
 import java.util.Arrays
@@ -291,6 +292,18 @@ class SharedServer(
         // AutoMQ inject start
         telemetryManager = buildTelemetryManager(sharedServerConfig, clusterId)
         telemetryManager.init()
+
+        // Configure KafkaRaftClient for S3 snapshot reading
+        val s3SnapshotReadEnabled = sharedServerConfig.getBoolean(kafka.automq.AutoMQConfig.S3_KRAFT_SNAPSHOT_READ_ENABLE_CONFIG)
+        val snapshotObjectStorage = if (s3SnapshotReadEnabled) {
+          val autoMQConfig = sharedServerConfig.automq
+          val dataBuckets = autoMQConfig.dataBuckets()
+          val s3Config = ConfigUtils.to(sharedServerConfig)
+          ObjectStorageFactory.createMainObjectStorage(dataBuckets, s3Config.objectTagging())
+        } else {
+          null
+        }
+        KafkaRaftClient.setS3KraftSnapshotConfig(s3SnapshotReadEnabled, snapshotObjectStorage)
         // AutoMQ inject end
 
         val _raftManager = new KafkaRaftManager[ApiMessageAndVersion](

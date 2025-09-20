@@ -1858,10 +1858,12 @@ project(':raft') {
   }
 
   dependencies {
-    implementation project(':server-common')
-    implementation project(':clients')
+    api project(':server-common')
+    api project(':clients')
+    api project(':s3stream')
     implementation libs.slf4jApi
     implementation libs.jacksonDatabind
+    implementation libs.nettyBuffer
 
     testImplementation project(':server-common')
     testImplementation project(':server-common').sourceSets.test.output

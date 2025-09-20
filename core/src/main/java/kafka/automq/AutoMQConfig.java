@@ -148,6 +148,10 @@ public class AutoMQConfig {
     public static final String S3_OBJECT_DELETION_MINUTES_DOC = "The marked-for-deletion S3 object retention time in minutes, default is 60 minutes (1 hour).";
     public static final long S3_OBJECT_DELETE_RETENTION_MINUTES = 60; // 60min (1 hour)
 
+    public static final String S3_KRAFT_SNAPSHOT_READ_ENABLE_CONFIG = "s3.kraft.snapshot.read.enable";
+    public static final String S3_KRAFT_SNAPSHOT_READ_ENABLE_DOC = "Enable reading Kraft snapshots from S3 storage instead of local storage. When enabled, the system will attempt to load the latest snapshot from S3 using the snapshot name with '.backup' suffix.";
+    public static final boolean S3_KRAFT_SNAPSHOT_READ_ENABLE_DEFAULT = false;
+
     public static final String S3_OBJECT_LOG_ENABLE_CONFIG = "s3.object.log.enable";
     public static final String S3_OBJECT_LOG_ENABLE_DOC = "Whether to enable S3 object trace log.";
 
@@ -280,6 +284,7 @@ public class AutoMQConfig {
             .define(AutoMQConfig.S3_MAX_STREAM_OBJECT_NUM_PER_COMMIT_CONFIG, INT, S3_MAX_STREAM_OBJECT_NUM_PER_COMMIT, MEDIUM, AutoMQConfig.S3_MAX_STREAM_OBJECT_NUM_PER_COMMIT_DOC)
             .define(AutoMQConfig.S3_MOCK_ENABLE_CONFIG, BOOLEAN, false, LOW, AutoMQConfig.S3_MOCK_ENABLE_DOC)
             .define(AutoMQConfig.S3_OBJECT_DELETION_MINUTES_CONFIG, LONG, S3_OBJECT_DELETE_RETENTION_MINUTES, MEDIUM, AutoMQConfig.S3_OBJECT_DELETION_MINUTES_DOC)
+            .define(AutoMQConfig.S3_KRAFT_SNAPSHOT_READ_ENABLE_CONFIG, BOOLEAN, S3_KRAFT_SNAPSHOT_READ_ENABLE_DEFAULT, MEDIUM, AutoMQConfig.S3_KRAFT_SNAPSHOT_READ_ENABLE_DOC)
             .define(AutoMQConfig.S3_NETWORK_BASELINE_BANDWIDTH_CONFIG, LONG, S3_NETWORK_BASELINE_BANDWIDTH, MEDIUM, AutoMQConfig.S3_NETWORK_BASELINE_BANDWIDTH_DOC)
             .define(AutoMQConfig.S3_NETWORK_REFILL_PERIOD_MS_CONFIG, INT, S3_REFILL_PERIOD_MS, MEDIUM, AutoMQConfig.S3_NETWORK_REFILL_PERIOD_MS_DOC)
             .define(AutoMQConfig.S3_TELEMETRY_METRICS_LEVEL_CONFIG, STRING, "INFO", MEDIUM, AutoMQConfig.S3_TELEMETRY_METRICS_LEVEL_DOC)
