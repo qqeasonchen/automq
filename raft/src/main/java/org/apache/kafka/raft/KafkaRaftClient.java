@@ -109,6 +109,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.automq.stream.s3.operator.ObjectStorage;
 import io.netty.buffer.ByteBuf;
+import org.apache.kafka.server.common.S3SnapshotConfig;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static org.apache.kafka.raft.RaftUtil.hasValidTopicPartition;
@@ -162,16 +163,14 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
     public static final int MAX_FETCH_SIZE_BYTES = MAX_BATCH_SIZE_BYTES;
 
     // Configuration for S3 Kraft snapshot reading
-    private static volatile boolean s3KraftSnapshotReadEnabled = false;
-    private static volatile ObjectStorage globalObjectStorage = null;
+    private static volatile S3SnapshotConfig s3SnapshotConfig = S3SnapshotConfig.disabled();
 
     /**
-     * Set the configuration for S3 Kraft snapshot reading.
+     * Set the S3 snapshot configuration.
      * This should be called during server startup.
      */
-    public static void setS3KraftSnapshotConfig(boolean enabled, ObjectStorage objectStorage) {
-        s3KraftSnapshotReadEnabled = enabled;
-        globalObjectStorage = objectStorage;
+    public static void setS3SnapshotConfig(S3SnapshotConfig config) {
+        s3SnapshotConfig = config != null ? config : S3SnapshotConfig.disabled();
     }
 
     private final OptionalInt nodeId;
@@ -440,7 +439,7 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
 
     public Optional<SnapshotReader<T>> latestSnapshot() {
         // Check if S3 Kraft snapshot reading is enabled
-        if (s3KraftSnapshotReadEnabled && globalObjectStorage != null) {
+        if (s3SnapshotConfig.isConfigured()) {
             logger.info("S3 Kraft snapshot reading is enabled, attempting to load snapshot from S3");
 
             // Try to load snapshot from S3 first
@@ -3786,14 +3785,15 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
             OffsetAndEpoch snapshotId = latestSnapshotId.get();
             String snapshotObjectKey = generateS3SnapshotObjectKey(snapshotId);
 
-            // Use the global ObjectStorage for reading from S3
-            if (globalObjectStorage == null) {
-                logger.warn("Global ObjectStorage is not configured for S3 snapshot reading");
+            // Use the configured ObjectStorage for reading from S3
+            ObjectStorage objectStorage = s3SnapshotConfig.getObjectStorage();
+            if (objectStorage == null) {
+                logger.warn("ObjectStorage is not configured for S3 snapshot reading");
                 return Optional.empty();
             }
 
             // Read snapshot data from S3
-            byte[] snapshotData = readSnapshotDataFromS3(globalObjectStorage, snapshotObjectKey);
+            byte[] snapshotData = readSnapshotDataFromS3(objectStorage, snapshotObjectKey);
             if (snapshotData == null) {
                 logger.warn("Failed to read snapshot data from S3 for key: {}", snapshotObjectKey);
                 return Optional.empty();

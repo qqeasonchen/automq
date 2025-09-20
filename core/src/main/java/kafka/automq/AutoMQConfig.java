@@ -320,6 +320,7 @@ public class AutoMQConfig {
     private String metricsExporterURI;
     private List<Pair<String, String>> baseLabels;
     private Optional<BucketURI> zoneRouterChannels;
+    private boolean s3KraftSnapshotReadEnabled;
 
     public AutoMQConfig setup(KafkaConfig config) {
         dataBuckets = genDataBuckets(config);
@@ -328,6 +329,7 @@ public class AutoMQConfig {
         metricsExporterURI = genMetricsExporterURI(config);
         baseLabels = parseBaseLabels(config);
         zoneRouterChannels = genZoneRouterChannels(config);
+        s3KraftSnapshotReadEnabled = config.getBoolean(S3_KRAFT_SNAPSHOT_READ_ENABLE_CONFIG);
         return this;
     }
 
@@ -353,6 +355,10 @@ public class AutoMQConfig {
 
     public Optional<BucketURI> zoneRouterChannels() {
         return zoneRouterChannels;
+    }
+
+    public boolean s3KraftSnapshotReadEnabled() {
+        return s3KraftSnapshotReadEnabled;
     }
 
     private static List<BucketURI> genDataBuckets(KafkaConfig config) {

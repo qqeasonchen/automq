@@ -42,8 +42,8 @@ import org.apache.kafka.server.common.ApiMessageAndVersion
 import org.apache.kafka.server.fault.{FaultHandler, LoggingFaultHandler, ProcessTerminatingFaultHandler}
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
 
-import com.automq.stream.s3.operator.ObjectStorageFactory
 import org.apache.kafka.raft.KafkaRaftClient
+import org.apache.kafka.server.common.S3SnapshotConfigFactory
 
 import java.net.InetSocketAddress
 import java.util.Arrays
@@ -293,17 +293,16 @@ class SharedServer(
         telemetryManager = buildTelemetryManager(sharedServerConfig, clusterId)
         telemetryManager.init()
 
-        // Configure KafkaRaftClient for S3 snapshot reading
-        val s3SnapshotReadEnabled = sharedServerConfig.getBoolean(kafka.automq.AutoMQConfig.S3_KRAFT_SNAPSHOT_READ_ENABLE_CONFIG)
-        val snapshotObjectStorage = if (s3SnapshotReadEnabled) {
-          val autoMQConfig = sharedServerConfig.automq
-          val dataBuckets = autoMQConfig.dataBuckets()
-          val s3Config = ConfigUtils.to(sharedServerConfig)
-          ObjectStorageFactory.createMainObjectStorage(dataBuckets, s3Config.objectTagging())
-        } else {
-          null
-        }
-        KafkaRaftClient.setS3KraftSnapshotConfig(s3SnapshotReadEnabled, snapshotObjectStorage)
+        // Configure KafkaRaftClient for S3 snapshot reading using S3SnapshotConfig
+        // Use the factory to create S3SnapshotConfig with AutoMQConfig directly
+        val autoMQConfig = sharedServerConfig.automq
+        val s3Config = ConfigUtils.to(sharedServerConfig)
+        val s3SnapshotConfig = S3SnapshotConfigFactory.createWithObjectStorage(
+          autoMQConfig.s3KraftSnapshotReadEnabled(),
+          autoMQConfig.dataBuckets(),
+          s3Config.objectTagging()
+        )
+        KafkaRaftClient.setS3SnapshotConfig(s3SnapshotConfig)
         // AutoMQ inject end
 
         val _raftManager = new KafkaRaftManager[ApiMessageAndVersion](
@@ -343,18 +342,14 @@ class SharedServer(
           setHighWaterMarkAccessor(() => _raftManager.client.highWatermark()).
           setMetrics(metadataLoaderMetrics)
         loader = loaderBuilder.build()
-        // Extract bucket name from AutoMQConfig S3_DATA_BUCKETS_CONFIG and create ObjectStorage
-        // Mimic the approach used in DefaultS3Client#newMainObjectStorage
-        val autoMQConfig = sharedServerConfig.automq
-        val dataBuckets = autoMQConfig.dataBuckets()
-        val s3Config = ConfigUtils.to(sharedServerConfig)
-        val objectStorage = ObjectStorageFactory.createMainObjectStorage(dataBuckets, s3Config.objectTagging())
+        // Create SnapshotEmitter using ObjectStorage from S3SnapshotConfig (no longer creating it twice)
+        val objectStorage = s3SnapshotConfig.getObjectStorage()
         snapshotEmitter = new SnapshotEmitter.Builder().
           setNodeId(nodeId).
           setRaftClient(_raftManager.client).
           setMetrics(new SnapshotEmitterMetrics(
             Optional.of(KafkaYammerMetrics.defaultRegistry()), time)).
-          setBucketName(dataBuckets.get(0).bucket()).
+          setBucketName(autoMQConfig.dataBuckets().get(0).bucket()).
           setObjectStorage(objectStorage).
           build()
         snapshotGenerator = new SnapshotGenerator.Builder(snapshotEmitter).
