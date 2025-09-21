@@ -81,6 +81,7 @@ import org.apache.kafka.raft.internals.RemoveVoterHandler;
 import org.apache.kafka.raft.internals.ThresholdPurgatory;
 import org.apache.kafka.raft.internals.UpdateVoterHandler;
 import org.apache.kafka.server.common.KRaftVersion;
+import org.apache.kafka.server.common.S3SnapshotConfig;
 import org.apache.kafka.server.common.serialization.RecordSerde;
 import org.apache.kafka.snapshot.NotifyingRawSnapshotWriter;
 import org.apache.kafka.snapshot.RawSnapshotReader;
@@ -90,26 +91,38 @@ import org.apache.kafka.snapshot.RecordsSnapshotWriter;
 import org.apache.kafka.snapshot.SnapshotReader;
 import org.apache.kafka.snapshot.SnapshotWriter;
 
+import com.automq.stream.s3.operator.ObjectStorage;
+
 import org.slf4j.Logger;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.*;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
+import java.util.Random;
+import java.util.Set;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.util.concurrent.TimeUnit;
 
-import com.automq.stream.s3.operator.ObjectStorage;
 import io.netty.buffer.ByteBuf;
-import org.apache.kafka.server.common.S3SnapshotConfig;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static org.apache.kafka.raft.RaftUtil.hasValidTopicPartition;
