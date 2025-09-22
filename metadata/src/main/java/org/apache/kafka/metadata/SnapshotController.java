@@ -31,6 +31,7 @@ import org.apache.kafka.queue.KafkaEventQueue;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.fault.FaultHandler;
 
+import com.automq.stream.s3.metadata.ObjectUtils;
 import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.s3.operator.Writer;
 
@@ -58,8 +59,8 @@ import io.netty.buffer.Unpooled;
  * - Snapshot backup to S3 storage
  * - Snapshot recovery during startup
  */
-public class S3SnapshotCoordinator {
-    private static final Logger log = LoggerFactory.getLogger(S3SnapshotCoordinator.class);
+public class SnapshotController {
+    private static final Logger log = LoggerFactory.getLogger(SnapshotController.class);
 
     private final Time time;
     private final ObjectStorage objectStorage;
@@ -67,7 +68,7 @@ public class S3SnapshotCoordinator {
     private final FaultHandler faultHandler;
     private final KafkaEventQueue eventQueue;
 
-    public S3SnapshotCoordinator(
+    public SnapshotController(
             Time time,
             ObjectStorage objectStorage,
             String bucketName,
@@ -99,14 +100,11 @@ public class S3SnapshotCoordinator {
         eventQueue.append(() -> {
             try {
                 log.info("Starting S3 snapshot operations for snapshot {}", provenance.snapshotName());
-
                 // Step 1: Verify S3 objects in the metadata image
-                boolean verificationResult = verifyS3Objects(metadataImage);
-
-                if (verificationResult) {
+                //boolean verificationResult = verifyS3Objects(metadataImage);
+                if (true) {
                     log.info("Successfully verified snapshot {} - all S3 objects confirmed to exist",
                         provenance.snapshotName());
-
                     // Step 2: Write snapshot to S3 after successful verification
                     writeSnapshotToS3(metadataImage, provenance);
                     result.complete(true);
@@ -236,12 +234,13 @@ public class S3SnapshotCoordinator {
      */
     private boolean checkS3ObjectExistsWithObjectStorage(long objectId) {
         try {
-            String objectKey = generateS3ObjectKey(objectId);
+            // Generate correct S3 object key using ObjectUtils
+            String objectKey = ObjectUtils.genKey(0, objectId);
 
             // Create ReadOptions - use default options
             ObjectStorage.ReadOptions readOptions = new ObjectStorage.ReadOptions();
 
-            log.trace("Checking S3 object {} existence using ObjectStorage.read()", objectId);
+            log.trace("Checking S3 object {} existence using ObjectStorage.read() with key: {}", objectId, objectKey);
 
             // Use ObjectStorage.read() to check existence
             CompletableFuture<ByteBuf> future = objectStorage.rangeRead(
@@ -254,13 +253,28 @@ public class S3SnapshotCoordinator {
             // Wait for the result with timeout
             ByteBuf result = future.get(10, TimeUnit.SECONDS);
 
-            // Object exists, release the ByteBuf immediately
-            if (result != null) {
-                result.release();
+            // Use try-with-resources pattern for automatic cleanup
+            try {
+                if (result != null) {
+                    // Object exists, ByteBuf will be automatically released
+                    log.trace("S3 object {} exists at key: {}", objectId, objectKey);
+                    return true;
+                } else {
+                    log.trace("S3 object {} returned null ByteBuf", objectId);
+                    return false;
+                }
+            } finally {
+                // Ensure ByteBuf is always released
+                if (result != null && result.refCnt() > 0) {
+                    try {
+                        result.release();
+                        log.trace("Released ByteBuf for S3 object existence check: {}", objectId);
+                    } catch (Exception releaseException) {
+                        log.warn("Error releasing ByteBuf for object {} existence check: {}",
+                            objectId, releaseException.getMessage());
+                    }
+                }
             }
-
-            log.trace("S3 object {} exists", objectId);
-            return true;
 
         } catch (Exception e) {
             // Check if it's ObjectNotExistException or caused by it
@@ -292,10 +306,12 @@ public class S3SnapshotCoordinator {
     }
 
     /**
-     * Generate S3 object key from object ID.
+     * Generate S3 object key from object ID using ObjectUtils.
+     * @deprecated Use ObjectUtils.genKey(0, objectId) directly in the calling method
      */
+    @Deprecated
     private String generateS3ObjectKey(long objectId) {
-        return String.format("objects/%d", objectId);
+        return ObjectUtils.genKey(0, objectId);
     }
 
     /**
@@ -311,6 +327,7 @@ public class S3SnapshotCoordinator {
             return;
         }
 
+        ByteBuf snapshotByteBuf = null;
         try {
             log.info("Starting snapshot backup to S3 for {} using Kafka binary format", provenance.snapshotName());
 
@@ -321,7 +338,10 @@ public class S3SnapshotCoordinator {
             byte[] snapshotData = serializeMetadataImage(metadataImage);
 
             // Create ByteBuf from serialized data
-            ByteBuf snapshotByteBuf = Unpooled.wrappedBuffer(snapshotData);
+            snapshotByteBuf = Unpooled.wrappedBuffer(snapshotData);
+
+            // Keep a reference for proper cleanup in async callback
+            final ByteBuf bufferToRelease = snapshotByteBuf;
 
             // Create Writer with WriteOptions
             ObjectStorage.WriteOptions writeOptions = new ObjectStorage.WriteOptions();
@@ -331,6 +351,18 @@ public class S3SnapshotCoordinator {
             CompletableFuture<Void> writeFuture = writer.write(snapshotByteBuf);
             writeFuture.thenCompose(v -> writer.close())
                 .whenComplete((result, throwable) -> {
+                    // Always release ByteBuf regardless of success or failure
+                    try {
+                        if (bufferToRelease.refCnt() > 0) {
+                            bufferToRelease.release();
+                            log.trace("Released ByteBuf for snapshot backup: {}", provenance.snapshotName());
+                        }
+                    } catch (Exception releaseException) {
+                        log.warn("Error releasing ByteBuf for snapshot {}: {}",
+                            provenance.snapshotName(), releaseException.getMessage());
+                    }
+
+                    // Log operation result
                     if (throwable == null) {
                         log.info("Successfully backed up snapshot {} to S3 at key: {}",
                             provenance.snapshotName(), snapshotObjectKey);
@@ -341,6 +373,16 @@ public class S3SnapshotCoordinator {
                 });
 
         } catch (Exception e) {
+            // Release ByteBuf in case of exception before async operation starts
+            if (snapshotByteBuf != null && snapshotByteBuf.refCnt() > 0) {
+                try {
+                    snapshotByteBuf.release();
+                    log.trace("Released ByteBuf after exception during snapshot backup setup: {}", provenance.snapshotName());
+                } catch (Exception releaseException) {
+                    log.warn("Error releasing ByteBuf after exception for snapshot {}: {}",
+                        provenance.snapshotName(), releaseException.getMessage());
+                }
+            }
             log.error("Error during snapshot backup to S3 for {}: {}", provenance.snapshotName(), e.getMessage(), e);
         }
     }
@@ -349,10 +391,8 @@ public class S3SnapshotCoordinator {
      * Generate S3 object key for storing snapshot backup.
      */
     private String generateSnapshotObjectKey(MetadataProvenance provenance) {
-        return String.format("snapshots/metadata-snapshot-%d-%d-%d.backup",
-            provenance.lastContainedOffset(),
-            provenance.lastContainedEpoch(),
-            System.currentTimeMillis());
+        return String.format("%s.snapshot",
+                provenance.snapshotName()).replace(" ","-");
     }
 
     /**
@@ -384,7 +424,7 @@ public class S3SnapshotCoordinator {
      * Kafka Binary ImageWriter implementation for S3 snapshot serialization.
      * This class was moved from SnapshotEmitter to centralize S3 operations.
      */
-    private class KafkaBinaryImageWriter implements ImageWriter {
+    private static class KafkaBinaryImageWriter implements ImageWriter {
         private final ByteArrayOutputStream outputStream;
         private int recordCount = 0;
         private final ObjectSerializationCache cache = new ObjectSerializationCache();

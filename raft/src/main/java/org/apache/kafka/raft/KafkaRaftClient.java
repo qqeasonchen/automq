@@ -452,7 +452,7 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
 
     public Optional<SnapshotReader<T>> latestSnapshot() {
         // Check if S3 Kraft snapshot reading is enabled
-        if (s3SnapshotConfig.isConfigured()) {
+        if (s3SnapshotConfig.isS3KraftSnapshotReadEnabled()) {
             logger.info("S3 Kraft snapshot reading is enabled, attempting to load snapshot from S3");
 
             // Try to load snapshot from S3 first

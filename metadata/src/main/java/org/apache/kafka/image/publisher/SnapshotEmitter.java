@@ -25,7 +25,7 @@ import org.apache.kafka.image.MetadataProvenance;
 import org.apache.kafka.image.publisher.metrics.SnapshotEmitterMetrics;
 import org.apache.kafka.image.writer.ImageWriterOptions;
 import org.apache.kafka.image.writer.RaftSnapshotWriter;
-import org.apache.kafka.metadata.S3SnapshotCoordinator;
+import org.apache.kafka.metadata.SnapshotController;
 import org.apache.kafka.queue.EventQueue;
 import org.apache.kafka.queue.KafkaEventQueue;
 import org.apache.kafka.raft.RaftClient;
@@ -61,7 +61,6 @@ public class SnapshotEmitter implements SnapshotGenerator.Emitter {
         private String threadNamePrefix = "";
         private String bucketName = null;
         private ObjectStorage objectStorage = null;
-        private S3SnapshotCoordinator s3SnapshotCoordinator = null;
 
         public Builder setTime(Time time) {
             this.time = time;
@@ -174,7 +173,7 @@ public class SnapshotEmitter implements SnapshotGenerator.Emitter {
     /**
      * S3SnapshotCoordinator for handling S3 snapshot operations.
      */
-    private final S3SnapshotCoordinator s3SnapshotCoordinator;
+    private final SnapshotController snapshotController;
 
     private SnapshotEmitter(
         Time time,
@@ -198,18 +197,18 @@ public class SnapshotEmitter implements SnapshotGenerator.Emitter {
         this.bucketName = bucketName;
         this.objectStorage = objectStorage;
 
-        // Create and start S3SnapshotCoordinator if ObjectStorage is available
+        // Create and start snapshotController if ObjectStorage is available
         if (objectStorage != null) {
-            this.s3SnapshotCoordinator = new S3SnapshotCoordinator(
+            this.snapshotController = new SnapshotController(
                 time,
                 objectStorage,
                 bucketName,
                 faultHandler,
                 threadNamePrefix
             );
-            this.s3SnapshotCoordinator.start();
+            this.snapshotController.start();
         } else {
-            this.s3SnapshotCoordinator = null;
+            this.snapshotController = null;
         }
     }
 
@@ -238,9 +237,9 @@ public class SnapshotEmitter implements SnapshotGenerator.Emitter {
             metrics.setLatestSnapshotGeneratedBytes(writer.frozenSize().getAsLong());
             log.info("Successfully wrote {}", provenance.snapshotName());
 
-            // Use S3SnapshotCoordinator for async snapshot operations
-            if (s3SnapshotCoordinator != null) {
-                s3SnapshotCoordinator.scheduleSnapshotOperations(image, provenance);
+            // Use snapshotController for async snapshot operations
+            if (snapshotController != null) {
+                snapshotController.scheduleSnapshotOperations(image, provenance);
             }
 
         } catch (Throwable e) {
@@ -260,11 +259,11 @@ public class SnapshotEmitter implements SnapshotGenerator.Emitter {
         eventQueue.beginShutdown("close");
         eventQueue.close();
 
-        // Close S3SnapshotCoordinator if it exists
-        if (s3SnapshotCoordinator != null) {
+        // Close snapshotController if it exists
+        if (snapshotController != null) {
             try {
-                s3SnapshotCoordinator.beginShutdown();
-                s3SnapshotCoordinator.close();
+                snapshotController.beginShutdown();
+                snapshotController.close();
             } catch (Exception e) {
                 log.warn("Error closing S3SnapshotCoordinator", e);
             }

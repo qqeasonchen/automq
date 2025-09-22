@@ -25,6 +25,7 @@ import org.apache.kafka.raft.OffsetAndEpoch;
 import org.apache.kafka.raft.RaftClient;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.common.KRaftVersion;
+import org.apache.kafka.snapshot.SnapshotReader;
 import org.apache.kafka.snapshot.SnapshotWriter;
 
 import org.junit.jupiter.api.Test;
@@ -114,6 +115,11 @@ public class SnapshotEmitterTest {
             } else {
                 return Optional.of(descendingSet.first());
             }
+        }
+
+        @Override
+        public Optional<SnapshotReader<ApiMessageAndVersion>> latestSnapshot() {
+            return Optional.empty();
         }
 
         @Override

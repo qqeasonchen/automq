@@ -800,6 +800,11 @@ public final class LocalLogManager implements RaftClient<ApiMessageAndVersion>, 
     }
 
     @Override
+    public Optional<SnapshotReader<ApiMessageAndVersion>> latestSnapshot() {
+        return Optional.empty();
+    }
+
+    @Override
     public synchronized long logEndOffset() {
         return shared.prevOffset + 1;
     }

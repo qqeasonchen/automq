@@ -297,11 +297,16 @@ class SharedServer(
         // Use the factory to create S3SnapshotConfig with AutoMQConfig directly
         val autoMQConfig = sharedServerConfig.automq
         val s3Config = ConfigUtils.to(sharedServerConfig)
-        val s3SnapshotConfig = S3SnapshotConfigFactory.createWithObjectStorage(
-          autoMQConfig.s3KraftSnapshotReadEnabled(),
-          autoMQConfig.dataBuckets(),
-          s3Config.objectTagging()
-        )
+        // Create S3SnapshotConfig with ObjectStorage only if either read or write is enabled
+        val s3SnapshotConfig = if (autoMQConfig.s3KraftSnapshotWriteEnabled()) {
+          S3SnapshotConfigFactory.createWithObjectStorage(
+            autoMQConfig.s3KraftSnapshotWriteEnabled(),
+            autoMQConfig.dataBuckets(),
+            s3Config.objectTagging()
+          )
+        } else {
+          S3SnapshotConfigFactory.createDisabled()
+        }
         KafkaRaftClient.setS3SnapshotConfig(s3SnapshotConfig)
         // AutoMQ inject end
 
@@ -342,16 +347,29 @@ class SharedServer(
           setHighWaterMarkAccessor(() => _raftManager.client.highWatermark()).
           setMetrics(metadataLoaderMetrics)
         loader = loaderBuilder.build()
-        // Create SnapshotEmitter using ObjectStorage from S3SnapshotConfig (no longer creating it twice)
-        val objectStorage = s3SnapshotConfig.getObjectStorage()
-        snapshotEmitter = new SnapshotEmitter.Builder().
-          setNodeId(nodeId).
-          setRaftClient(_raftManager.client).
-          setMetrics(new SnapshotEmitterMetrics(
-            Optional.of(KafkaYammerMetrics.defaultRegistry()), time)).
-          setBucketName(autoMQConfig.dataBuckets().get(0).bucket()).
-          setObjectStorage(objectStorage).
-          build()
+        // Create SnapshotEmitter conditionally based on s3.kraft.snapshot.write.enable configuration
+        if (autoMQConfig.s3KraftSnapshotWriteEnabled()) {
+          info("S3 Kraft snapshot write is enabled, creating SnapshotEmitter with ObjectStorage for S3 backup")
+          // Create SnapshotEmitter using ObjectStorage from S3SnapshotConfig for S3 backup
+          val objectStorage = s3SnapshotConfig.getObjectStorage()
+          snapshotEmitter = new SnapshotEmitter.Builder().
+            setNodeId(nodeId).
+            setRaftClient(_raftManager.client).
+            setMetrics(new SnapshotEmitterMetrics(
+              Optional.of(KafkaYammerMetrics.defaultRegistry()), time)).
+            setBucketName(autoMQConfig.dataBuckets().get(0).bucket()).
+            setObjectStorage(objectStorage).
+            build()
+        } else {
+          info("S3 Kraft snapshot write is disabled, creating SnapshotEmitter without ObjectStorage")
+          // Create SnapshotEmitter without ObjectStorage (no S3 backup)
+          snapshotEmitter = new SnapshotEmitter.Builder().
+            setNodeId(nodeId).
+            setRaftClient(_raftManager.client).
+            setMetrics(new SnapshotEmitterMetrics(
+              Optional.of(KafkaYammerMetrics.defaultRegistry()), time)).
+            build()
+        }
         snapshotGenerator = new SnapshotGenerator.Builder(snapshotEmitter).
           setNodeId(nodeId).
           setTime(time).

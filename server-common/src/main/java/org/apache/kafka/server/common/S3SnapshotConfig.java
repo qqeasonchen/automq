@@ -56,7 +56,8 @@ public class S3SnapshotConfig {
         }
     }
 
-    private final boolean s3KraftSnapshotReadEnabled;
+    private boolean s3KraftSnapshotReadEnabled;
+    private boolean s3KraftSnapshotWriteEnabled;
     private final ObjectStorage objectStorage;
     private final List<DataBucket> dataBuckets;
     private final boolean objectTagging;
@@ -64,14 +65,14 @@ public class S3SnapshotConfig {
     /**
      * Create a new S3SnapshotConfig instance.
      *
-     * @param s3KraftSnapshotReadEnabled Whether S3 Kraft snapshot reading is enabled
+     * @param s3KraftSnapshotWriteEnabled Whether S3 Kraft snapshot reading is enabled
      * @param objectStorage The ObjectStorage instance for S3 operations, can be null if disabled
      * @param dataBuckets List of data buckets for S3 operations
      * @param objectTagging Whether object tagging is enabled
      */
-    public S3SnapshotConfig(boolean s3KraftSnapshotReadEnabled, ObjectStorage objectStorage,
+    public S3SnapshotConfig(boolean s3KraftSnapshotWriteEnabled, ObjectStorage objectStorage,
                            List<DataBucket> dataBuckets, boolean objectTagging) {
-        this.s3KraftSnapshotReadEnabled = s3KraftSnapshotReadEnabled;
+        this.s3KraftSnapshotWriteEnabled = s3KraftSnapshotWriteEnabled;
         this.objectStorage = objectStorage;
         this.dataBuckets = dataBuckets;
         this.objectTagging = objectTagging;
@@ -94,6 +95,10 @@ public class S3SnapshotConfig {
      */
     public boolean isS3KraftSnapshotReadEnabled() {
         return s3KraftSnapshotReadEnabled;
+    }
+
+    public boolean isS3KraftSnapshotWriteEnabled() {
+        return s3KraftSnapshotWriteEnabled;
     }
 
     /**

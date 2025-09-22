@@ -71,18 +71,18 @@ public class S3SnapshotConfigFactory {
      * This method creates ObjectStorage internally using the provided bucket URIs and tagging configuration.
      * This method encapsulates the ObjectStorage creation logic previously in SharedServer.
      *
-     * @param s3KraftSnapshotReadEnabled Configuration properties containing S3 snapshot settings
+     * @param s3KraftSnapshotWriteEnabled Configuration properties containing S3 snapshot settings
      * @param dataBuckets Parsed list of bucket URIs from AutoMQConfig
      * @param objectTaggingMap Object tagging configuration map
      * @return S3SnapshotConfig instance with ObjectStorage created internally
      */
-    public static S3SnapshotConfig createWithObjectStorage(boolean s3KraftSnapshotReadEnabled, List<BucketURI> dataBuckets, Map<String, String> objectTaggingMap) {
+    public static S3SnapshotConfig createWithObjectStorage(boolean s3KraftSnapshotWriteEnabled, List<BucketURI> dataBuckets, Map<String, String> objectTaggingMap) {
         try {
             ObjectStorage objectStorage = null;
             List<S3SnapshotConfig.DataBucket> configDataBuckets = null;
             boolean objectTagging = objectTaggingMap != null && !objectTaggingMap.isEmpty();
 
-            if (s3KraftSnapshotReadEnabled && dataBuckets != null && !dataBuckets.isEmpty()) {
+            if (s3KraftSnapshotWriteEnabled && dataBuckets != null && !dataBuckets.isEmpty()) {
                 try {
                     // Create ObjectStorage using ObjectStorageFactory - this is the logic moved from SharedServer
                     objectStorage = ObjectStorageFactory.createMainObjectStorage(dataBuckets,
@@ -96,11 +96,11 @@ public class S3SnapshotConfigFactory {
                 }
             }
 
-            logger.info("Creating S3SnapshotConfig with s3KraftSnapshotReadEnabled={}, dataBuckets={}, objectTagging={}, objectStorage={}",
-                s3KraftSnapshotReadEnabled, configDataBuckets != null ? configDataBuckets.size() + " buckets" : "null",
+            logger.info("Creating S3SnapshotConfig with s3KraftSnapshotWriteEnabled={}, dataBuckets={}, objectTagging={}, objectStorage={}",
+                s3KraftSnapshotWriteEnabled, configDataBuckets != null ? configDataBuckets.size() + " buckets" : "null",
                 objectTagging, objectStorage != null ? "configured" : "null");
 
-            return new S3SnapshotConfig(s3KraftSnapshotReadEnabled, objectStorage, configDataBuckets, objectTagging);
+            return new S3SnapshotConfig(s3KraftSnapshotWriteEnabled, objectStorage, configDataBuckets, objectTagging);
 
         } catch (Exception e) {
             logger.warn("Failed to create S3SnapshotConfig with ObjectStorage from configuration, using disabled configuration: {}", e.getMessage());
