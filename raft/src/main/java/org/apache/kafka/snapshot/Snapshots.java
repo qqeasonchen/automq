@@ -59,6 +59,13 @@ public final class Snapshots {
         return logDir;
     }
 
+    /**
+     * Generate S3 object key for storing snapshot backup.
+     */
+    public static String generateSnapshotObjectKey(OffsetAndEpoch snapshotId) {
+        return String.format("kraft_snapshot/%s.snapshot",
+            Snapshots.filenameFromSnapshotId(snapshotId));
+    }
     public static String filenameFromSnapshotId(OffsetAndEpoch snapshotId) {
         return String.format("%s-%s", OFFSET_FORMATTER.format(snapshotId.offset()), EPOCH_FORMATTER.format(snapshotId.epoch()));
     }

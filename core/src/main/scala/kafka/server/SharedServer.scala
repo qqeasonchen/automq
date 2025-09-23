@@ -300,6 +300,7 @@ class SharedServer(
         // Create S3SnapshotConfig with ObjectStorage only if either read or write is enabled
         val s3SnapshotConfig = if (autoMQConfig.s3KraftSnapshotWriteEnabled()) {
           S3SnapshotConfigFactory.createWithObjectStorage(
+            autoMQConfig.s3KraftSnapshotReadEnabled(),
             autoMQConfig.s3KraftSnapshotWriteEnabled(),
             autoMQConfig.dataBuckets(),
             s3Config.objectTagging()

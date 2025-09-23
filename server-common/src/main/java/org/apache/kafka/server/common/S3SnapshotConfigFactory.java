@@ -41,32 +41,6 @@ public class S3SnapshotConfigFactory {
     private static final Logger logger = LoggerFactory.getLogger(S3SnapshotConfigFactory.class);
 
     /**
-     * Create S3SnapshotConfig from configuration properties and ObjectStorage instance.
-     * This method allows for flexible configuration while avoiding direct dependencies
-     * on core modules.
-     *
-     * @param properties Configuration properties containing S3 snapshot settings
-     * @param objectStorage Pre-configured ObjectStorage instance, can be null
-     * @return S3SnapshotConfig instance
-     */
-    public static S3SnapshotConfig create(Properties properties, ObjectStorage objectStorage) {
-        try {
-            // Read the S3 Kraft snapshot read enable configuration
-            String enabledStr = properties.getProperty(S3SnapshotConfig.S3_KRAFT_SNAPSHOT_READ_ENABLE_CONFIG, "false");
-            boolean s3KraftSnapshotReadEnabled = Boolean.parseBoolean(enabledStr);
-
-            logger.info("Creating S3SnapshotConfig with s3KraftSnapshotReadEnabled={}, objectStorage={}",
-                s3KraftSnapshotReadEnabled, objectStorage != null ? "configured" : "null");
-
-            return new S3SnapshotConfig(s3KraftSnapshotReadEnabled, objectStorage);
-
-        } catch (Exception e) {
-            logger.warn("Failed to create S3SnapshotConfig from properties, using disabled configuration: {}", e.getMessage());
-            return S3SnapshotConfig.disabled();
-        }
-    }
-
-    /**
      * Create S3SnapshotConfig with ObjectStorage creation from parsed configuration.
      * This method creates ObjectStorage internally using the provided bucket URIs and tagging configuration.
      * This method encapsulates the ObjectStorage creation logic previously in SharedServer.
@@ -76,7 +50,10 @@ public class S3SnapshotConfigFactory {
      * @param objectTaggingMap Object tagging configuration map
      * @return S3SnapshotConfig instance with ObjectStorage created internally
      */
-    public static S3SnapshotConfig createWithObjectStorage(boolean s3KraftSnapshotWriteEnabled, List<BucketURI> dataBuckets, Map<String, String> objectTaggingMap) {
+    public static S3SnapshotConfig createWithObjectStorage(
+        boolean s3KraftSnapshotReadEnabled,
+        boolean s3KraftSnapshotWriteEnabled,
+        List<BucketURI> dataBuckets, Map<String, String> objectTaggingMap) {
         try {
             ObjectStorage objectStorage = null;
             List<S3SnapshotConfig.DataBucket> configDataBuckets = null;
@@ -100,27 +77,12 @@ public class S3SnapshotConfigFactory {
                 s3KraftSnapshotWriteEnabled, configDataBuckets != null ? configDataBuckets.size() + " buckets" : "null",
                 objectTagging, objectStorage != null ? "configured" : "null");
 
-            return new S3SnapshotConfig(s3KraftSnapshotWriteEnabled, objectStorage, configDataBuckets, objectTagging);
+            return new S3SnapshotConfig(s3KraftSnapshotReadEnabled, s3KraftSnapshotWriteEnabled, objectStorage, configDataBuckets, objectTagging);
 
         } catch (Exception e) {
             logger.warn("Failed to create S3SnapshotConfig with ObjectStorage from configuration, using disabled configuration: {}", e.getMessage());
             return S3SnapshotConfig.disabled();
         }
-    }
-
-    /**
-     * Create S3SnapshotConfig with explicit parameters.
-     * This method provides direct control over the configuration parameters.
-     *
-     * @param s3KraftSnapshotReadEnabled Whether S3 Kraft snapshot reading is enabled
-     * @param objectStorage ObjectStorage instance for S3 operations
-     * @return S3SnapshotConfig instance
-     */
-    public static S3SnapshotConfig create(boolean s3KraftSnapshotReadEnabled, ObjectStorage objectStorage) {
-        logger.info("Creating S3SnapshotConfig with explicit parameters: s3KraftSnapshotReadEnabled={}, objectStorage={}",
-            s3KraftSnapshotReadEnabled, objectStorage != null ? "configured" : "null");
-
-        return new S3SnapshotConfig(s3KraftSnapshotReadEnabled, objectStorage);
     }
 
     /**

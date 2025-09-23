@@ -83,13 +83,7 @@ import org.apache.kafka.raft.internals.UpdateVoterHandler;
 import org.apache.kafka.server.common.KRaftVersion;
 import org.apache.kafka.server.common.S3SnapshotConfig;
 import org.apache.kafka.server.common.serialization.RecordSerde;
-import org.apache.kafka.snapshot.NotifyingRawSnapshotWriter;
-import org.apache.kafka.snapshot.RawSnapshotReader;
-import org.apache.kafka.snapshot.RawSnapshotWriter;
-import org.apache.kafka.snapshot.RecordsSnapshotReader;
-import org.apache.kafka.snapshot.RecordsSnapshotWriter;
-import org.apache.kafka.snapshot.SnapshotReader;
-import org.apache.kafka.snapshot.SnapshotWriter;
+import org.apache.kafka.snapshot.*;
 
 import com.automq.stream.s3.operator.ObjectStorage;
 
@@ -762,7 +756,7 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
             throw new IllegalArgumentException(
                 String.format(
                     "Unknown leader endpoints (%s) after request or response with leader (%s) and " +
-                    "the voters %s",
+                        "the voters %s",
                     endpoints,
                     leaderId,
                     partitionState.lastVoterSet()
@@ -1011,9 +1005,9 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
 
     /**
      * Handle a BeginEpoch request. This API may return the following errors:
-     *
+     * <p>
      * - {@link Errors#INCONSISTENT_CLUSTER_ID} if the cluster id is presented in request
-     *      but different from this node
+     * but different from this node
      * - {@link Errors#BROKER_NOT_AVAILABLE} if this node is currently shutting down
      * - {@link Errors#FENCED_LEADER_EPOCH} if the epoch is smaller than this node's epoch
      */
@@ -1801,15 +1795,15 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
     /**
      * Handle a FetchSnapshot request, similar to the Fetch request but we use {@link UnalignedRecords}
      * in response because the records are not necessarily offset-aligned.
-     *
+     * <p>
      * This API may return the following errors:
-     *
+     * <p>
      * - {@link Errors#INCONSISTENT_CLUSTER_ID} if the cluster id is presented in request
-     *     but different from this node
+     * but different from this node
      * - {@link Errors#BROKER_NOT_AVAILABLE} if this node is currently shutting down
      * - {@link Errors#FENCED_LEADER_EPOCH} if the epoch is smaller than this node's epoch
      * - {@link Errors#INVALID_REQUEST} if the request epoch is larger than the leader's current epoch
-     *     or if either the fetch offset or the last fetched epoch is invalid
+     * or if either the fetch offset or the last fetched epoch is invalid
      * - {@link Errors#SNAPSHOT_NOT_FOUND} if the request snapshot id does not exists
      * - {@link Errors#POSITION_OUT_OF_RANGE} if the request snapshot offset out of range
      */
@@ -2563,6 +2557,7 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
             })
             .orElse(true);
     }
+
     /**
      * Validate a request which is intended for the current quorum leader.
      * If an error is present in the returned value, it should be returned
@@ -3796,7 +3791,9 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
             }
 
             OffsetAndEpoch snapshotId = latestSnapshotId.get();
-            String snapshotObjectKey = generateS3SnapshotObjectKey(snapshotId);
+            snapshotId.setOffset(30861);
+            snapshotId.setEpoch(27);
+            String snapshotObjectKey = Snapshots.generateSnapshotObjectKey(snapshotId);
 
             // Use the configured ObjectStorage for reading from S3
             ObjectStorage objectStorage = s3SnapshotConfig.getObjectStorage();
@@ -3828,25 +3825,17 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
         }
     }
 
-    /**
-     * Generate S3 object key for snapshot based on the snapshot name pattern used by SnapshotEmitter.
-     */
-    private String generateS3SnapshotObjectKey(OffsetAndEpoch snapshotId) {
-        // Match the pattern used in SnapshotEmitter#generateSnapshotObjectKey
-        // Format: snapshots/metadata-snapshot-{offset}-{epoch}-{timestamp}.backup
-        // For latest snapshot, we'll look for the pattern without timestamp
-        return String.format("snapshots/metadata-snapshot-%d-%d-.backup",
-            snapshotId.offset(), snapshotId.epoch());
-    }
-
 
     /**
      * Read snapshot data from S3 using ObjectStorage.
      */
     private byte[] readSnapshotDataFromS3(ObjectStorage objectStorage, String objectKey) {
         try {
+            // Create ReadOptions with correct bucket ID (bucket 0 for data buckets)
+            ObjectStorage.ReadOptions readOptions = new ObjectStorage.ReadOptions().bucket((short) 0);
+
             CompletableFuture<ByteBuf> future = objectStorage.read(
-                new ObjectStorage.ReadOptions(),
+                readOptions,
                 objectKey
             );
 

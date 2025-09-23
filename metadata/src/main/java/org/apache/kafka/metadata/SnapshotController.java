@@ -35,6 +35,7 @@ import com.automq.stream.s3.metadata.ObjectUtils;
 import com.automq.stream.s3.operator.ObjectStorage;
 import com.automq.stream.s3.operator.Writer;
 
+import org.apache.kafka.snapshot.Snapshots;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -239,8 +240,8 @@ public class SnapshotController {
             // Generate correct S3 object key using ObjectUtils
             String objectKey = ObjectUtils.genKey(0, objectId);
 
-            // Create ReadOptions - use default options
-            ObjectStorage.ReadOptions readOptions = new ObjectStorage.ReadOptions();
+            // Create ReadOptions with correct bucket ID (bucket 0 for data buckets)
+            ObjectStorage.ReadOptions readOptions = new ObjectStorage.ReadOptions().bucket((short) 0);
 
             log.trace("Checking S3 object {} existence using ObjectStorage.read() with key: {}", objectId, objectKey);
 
@@ -334,8 +335,9 @@ public class SnapshotController {
             log.info("Starting snapshot backup to S3 for {} using Kafka binary format", provenance.snapshotName());
 
             // Generate S3 object key for the snapshot
-            String snapshotObjectKey = generateSnapshotObjectKey(provenance);
+            String snapshotObjectKey = Snapshots.generateSnapshotObjectKey(provenance.snapshotId());
 
+            log.info("Starting snapshot backup to S3 for snapshotObjectKey {} using Kafka binary format", snapshotObjectKey);
             // Serialize the metadata image to bytes
             byte[] snapshotData = serializeMetadataImage(metadataImage);
 
@@ -463,13 +465,7 @@ public class SnapshotController {
         }
     }
 
-    /**
-     * Generate S3 object key for storing snapshot backup.
-     */
-    private String generateSnapshotObjectKey(MetadataProvenance provenance) {
-        return String.format("kraft_snapshot/%s.snapshot",
-                provenance.snapshotName()).replace(" ","-");
-    }
+
 
     /**
      * Serialize MetadataImage to byte array for S3 storage.
