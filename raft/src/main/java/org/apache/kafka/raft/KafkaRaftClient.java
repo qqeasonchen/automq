@@ -83,7 +83,14 @@ import org.apache.kafka.raft.internals.UpdateVoterHandler;
 import org.apache.kafka.server.common.KRaftVersion;
 import org.apache.kafka.server.common.S3SnapshotConfig;
 import org.apache.kafka.server.common.serialization.RecordSerde;
-import org.apache.kafka.snapshot.*;
+import org.apache.kafka.snapshot.NotifyingRawSnapshotWriter;
+import org.apache.kafka.snapshot.RawSnapshotReader;
+import org.apache.kafka.snapshot.RawSnapshotWriter;
+import org.apache.kafka.snapshot.RecordsSnapshotReader;
+import org.apache.kafka.snapshot.RecordsSnapshotWriter;
+import org.apache.kafka.snapshot.SnapshotReader;
+import org.apache.kafka.snapshot.SnapshotWriter;
+import org.apache.kafka.snapshot.Snapshots;
 
 import com.automq.stream.s3.operator.ObjectStorage;
 
@@ -92,8 +99,11 @@ import org.slf4j.Logger;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -102,9 +112,6 @@ import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Random;
 import java.util.Set;
-import java.util.ArrayList;
-import java.util.IdentityHashMap;
-import java.util.Iterator;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
@@ -445,22 +452,29 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
     }
 
     public Optional<SnapshotReader<T>> latestSnapshot() {
-        // Check if S3 Kraft snapshot reading is enabled
-        if (s3SnapshotConfig.isS3KraftSnapshotReadEnabled()) {
-            logger.info("S3 Kraft snapshot reading is enabled, attempting to load snapshot from S3");
+        // First check for local snapshot
+        Optional<RawSnapshotReader> localSnapshot = log.latestSnapshot();
 
-            // Try to load snapshot from S3 first
+        // Check if S3 Kraft snapshot reading is enabled and no local snapshot exists
+        if (s3SnapshotConfig.isS3KraftSnapshotReadEnabled()
+            && (localSnapshot == null || !localSnapshot.isPresent())) {
+            logger.info("S3 Kraft snapshot reading is enabled and no local snapshot found, attempting to load snapshot from S3");
+
+            // Try to load snapshot from S3 when no local snapshot exists
             Optional<SnapshotReader<T>> s3Snapshot = loadSnapshotFromS3();
             if (s3Snapshot.isPresent()) {
                 logger.info("Successfully loaded snapshot from S3 storage");
+                // Write S3 snapshot to local expected location
+                writeS3SnapshotToLocal(s3Snapshot.get());
                 return s3Snapshot;
             } else {
-                logger.warn("Failed to load snapshot from S3, falling back to local snapshot");
+                logger.warn("Failed to load snapshot from S3, no local snapshot available");
+                return Optional.empty();
             }
         }
 
-        // Fall back to local snapshot
-        return log.latestSnapshot().map(reader ->
+        // Return local snapshot if available
+        return localSnapshot.map(reader ->
             RecordsSnapshotReader.of(reader,
                 serde,
                 // AutoMQ for Kafka inject start
@@ -3784,15 +3798,13 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
     private Optional<SnapshotReader<T>> loadSnapshotFromS3() {
         try {
             // Get latest local snapshot ID to generate S3 object key
-            Optional<OffsetAndEpoch> latestSnapshotId = log.latestSnapshotId();
-            if (!latestSnapshotId.isPresent()) {
-                logger.debug("No local snapshot ID available for S3 snapshot lookup");
-                return Optional.empty();
-            }
+//            Optional<OffsetAndEpoch> latestSnapshotId = log.latestSnapshotId();
+//            if (!latestSnapshotId.isPresent()) {
+//                logger.debug("No local snapshot ID available for S3 snapshot lookup");
+//                return Optional.empty();
+//            }
 
-            OffsetAndEpoch snapshotId = latestSnapshotId.get();
-            snapshotId.setOffset(30861);
-            snapshotId.setEpoch(27);
+            OffsetAndEpoch snapshotId = new OffsetAndEpoch(30861, 27);
             String snapshotObjectKey = Snapshots.generateSnapshotObjectKey(snapshotId);
 
             // Use the configured ObjectStorage for reading from S3
@@ -3873,6 +3885,47 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
         } catch (Exception e) {
             logger.error("Failed to create SnapshotReader from byte array: {}", e.getMessage(), e);
             return null;
+        }
+    }
+
+    /**
+     * Write S3 snapshot to local expected location, following the same pattern as SnapshotEmitter.maybeEmit.
+     * This creates a local snapshot file with the same naming convention.
+     */
+    private void writeS3SnapshotToLocal(SnapshotReader<T> s3SnapshotReader) {
+        try {
+            OffsetAndEpoch snapshotId = s3SnapshotReader.snapshotId();
+
+            // Create a snapshot writer using the same method as SnapshotEmitter
+            Optional<SnapshotWriter<T>> snapshotWriter = this.createSnapshot(snapshotId, time.milliseconds());
+            if (!snapshotWriter.isPresent()) {
+                logger.info("Local snapshot {} already exists, skipping write", snapshotId);
+                return;
+            }
+
+            logger.info("Writing S3 snapshot {} to local storage", snapshotId);
+
+            try (SnapshotWriter<T> writer = snapshotWriter.get()) {
+                // Read all batches from S3 snapshot and write to local snapshot
+                while (s3SnapshotReader.hasNext()) {
+                    Batch<T> batch = s3SnapshotReader.next();
+                    List<T> records = batch.records();
+                    if (!records.isEmpty()) {
+                        writer.append(records);
+                    }
+                }
+
+                // Freeze the snapshot to make it available
+                writer.freeze();
+                logger.info("Successfully wrote S3 snapshot {} to local storage", snapshotId);
+
+            } catch (Exception e) {
+                logger.error("Error writing S3 snapshot {} to local storage", snapshotId, e);
+                throw e;
+            }
+
+        } catch (Exception e) {
+            logger.error("Failed to write S3 snapshot to local storage: {}", e.getMessage(), e);
         }
     }
 
