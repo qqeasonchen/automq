@@ -345,14 +345,6 @@ public class SnapshotController {
             // Keep a reference for proper cleanup in async callback
             final ByteBuf bufferToRelease = snapshotByteBuf;
 
-            // Create Writer with WriteOptions and validation
-            ObjectStorage.WriteOptions writeOptions = new ObjectStorage.WriteOptions();
-            log.info("Creating writer for object key: {} with ObjectStorage: {}",
-                snapshotObjectKey, objectStorage.getClass().getSimpleName());
-
-            Writer writer = objectStorage.writer(writeOptions, snapshotObjectKey);
-            log.info("Successfully created writer: {}", writer.getClass().getSimpleName());
-
             // Validate ByteBuf before writing
             if (snapshotByteBuf.readableBytes() == 0) {
                 log.error("ByteBuf has no readable bytes! Cannot write empty data to S3");
@@ -363,8 +355,12 @@ public class SnapshotController {
             log.info("About to write ByteBuf to S3 - readable bytes: {}, refCnt: {}",
                 dataSize, snapshotByteBuf.refCnt());
 
+            // Create WriteOptions
+            ObjectStorage.WriteOptions writeOptions = new ObjectStorage.WriteOptions();
+
             // Use different upload strategy based on file size
             CompletableFuture<Void> uploadFuture;
+            Writer writer = null;
 
             if (dataSize < Writer.MIN_PART_SIZE) {
                 // For small files (< 5MB), use direct ObjectStorage.write() instead of MultiPartWriter
@@ -379,21 +375,52 @@ public class SnapshotController {
             } else {
                 // For large files (>= 5MB), use MultiPartWriter
                 log.info("Using MultiPartWriter for large file ({} bytes)", dataSize);
+                log.info("Creating writer for object key: {} with ObjectStorage: {}",
+                    snapshotObjectKey, objectStorage.getClass().getSimpleName());
+
+                writer = objectStorage.writer(writeOptions, snapshotObjectKey);
+                log.info("Successfully created writer: {}", writer.getClass().getSimpleName());
+
+                // Keep reference for cleanup
+                final Writer writerToRelease = writer;
 
                 uploadFuture = writer.write(snapshotByteBuf)
                     .thenCompose(v -> {
                         log.info("Data written to writer, now closing to force upload...");
-                        return writer.close();
+                        return writerToRelease.close();
+                    })
+                    .whenComplete((result, throwable) -> {
+                        // Always release writer resources
+                        try {
+                            writerToRelease.release().get(10, TimeUnit.SECONDS);
+                            log.trace("Successfully released writer resources for snapshot: {}", provenance.snapshotName());
+                        } catch (Exception releaseException) {
+                            log.warn("Error releasing writer resources for snapshot {}: {}",
+                                provenance.snapshotName(), releaseException.getMessage());
+                        }
                     });
             }
 
-            // Wait for upload to complete with timeout
+            // Wait for upload to complete with timeout and handle Writer cleanup on exception
+            final Writer finalWriter = writer; // For exception cleanup
             try {
                 uploadFuture.get(30, TimeUnit.SECONDS);
                 log.info("Successfully completed S3 upload for snapshot: {}", provenance.snapshotName());
             } catch (Exception uploadException) {
                 log.error("S3 upload failed for snapshot {}: {}",
                     provenance.snapshotName(), uploadException.getMessage(), uploadException);
+
+                // Release writer resources if upload failed and writer was created
+                if (finalWriter != null) {
+                    try {
+                        finalWriter.release().get(10, TimeUnit.SECONDS);
+                        log.trace("Released writer resources after upload failure for snapshot: {}", provenance.snapshotName());
+                    } catch (Exception releaseException) {
+                        log.warn("Error releasing writer resources after upload failure for snapshot {}: {}",
+                            provenance.snapshotName(), releaseException.getMessage());
+                    }
+                }
+
                 throw new RuntimeException("Failed to upload snapshot to S3", uploadException);
             }
 
@@ -440,7 +467,7 @@ public class SnapshotController {
      * Generate S3 object key for storing snapshot backup.
      */
     private String generateSnapshotObjectKey(MetadataProvenance provenance) {
-        return String.format("%s.snapshot",
+        return String.format("kraft_snapshot/%s.snapshot",
                 provenance.snapshotName()).replace(" ","-");
     }
 
