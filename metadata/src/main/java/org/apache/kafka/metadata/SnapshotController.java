@@ -103,9 +103,11 @@ public class SnapshotController {
                 // Step 1: Verify S3 objects in the metadata image
                 //boolean verificationResult = verifyS3Objects(metadataImage);
                 if (true) {
-                    log.info("Successfully verified snapshot {} - all S3 objects confirmed to exist",
-                        provenance.snapshotName());
+//                    log.info("Successfully verified snapshot {} - all S3 objects confirmed to exist",
+//                        provenance.snapshotName());
                     // Step 2: Write snapshot to S3 after successful verification
+                    log.info("Starting write snapshot to S3, snapshot:{}",
+                        provenance.snapshotName());
                     writeSnapshotToS3(metadataImage, provenance);
                     result.complete(true);
                 } else {
@@ -343,14 +345,61 @@ public class SnapshotController {
             // Keep a reference for proper cleanup in async callback
             final ByteBuf bufferToRelease = snapshotByteBuf;
 
-            // Create Writer with WriteOptions
+            // Create Writer with WriteOptions and validation
             ObjectStorage.WriteOptions writeOptions = new ObjectStorage.WriteOptions();
-            Writer writer = objectStorage.writer(writeOptions, snapshotObjectKey);
+            log.info("Creating writer for object key: {} with ObjectStorage: {}",
+                snapshotObjectKey, objectStorage.getClass().getSimpleName());
 
-            // Write data and close
-            CompletableFuture<Void> writeFuture = writer.write(snapshotByteBuf);
-            writeFuture.thenCompose(v -> writer.close())
-                .whenComplete((result, throwable) -> {
+            Writer writer = objectStorage.writer(writeOptions, snapshotObjectKey);
+            log.info("Successfully created writer: {}", writer.getClass().getSimpleName());
+
+            // Validate ByteBuf before writing
+            if (snapshotByteBuf.readableBytes() == 0) {
+                log.error("ByteBuf has no readable bytes! Cannot write empty data to S3");
+                throw new IllegalStateException("ByteBuf is empty");
+            }
+
+            long dataSize = snapshotByteBuf.readableBytes();
+            log.info("About to write ByteBuf to S3 - readable bytes: {}, refCnt: {}",
+                dataSize, snapshotByteBuf.refCnt());
+
+            // Use different upload strategy based on file size
+            CompletableFuture<Void> uploadFuture;
+
+            if (dataSize < Writer.MIN_PART_SIZE) {
+                // For small files (< 5MB), use direct ObjectStorage.write() instead of MultiPartWriter
+                log.info("Using direct S3 PUT for small file ({} bytes) - more efficient than multipart", dataSize);
+
+                uploadFuture = objectStorage.write(writeOptions, snapshotObjectKey, snapshotByteBuf)
+                    .thenApply(writeResult -> {
+                        log.info("Successfully uploaded small snapshot {} to S3 using direct PUT", provenance.snapshotName());
+                        return null;
+                    });
+
+            } else {
+                // For large files (>= 5MB), use MultiPartWriter
+                log.info("Using MultiPartWriter for large file ({} bytes)", dataSize);
+
+                uploadFuture = writer.write(snapshotByteBuf)
+                    .thenCompose(v -> {
+                        log.info("Data written to writer, now closing to force upload...");
+                        return writer.close();
+                    });
+            }
+
+            // Wait for upload to complete with timeout
+            try {
+                uploadFuture.get(30, TimeUnit.SECONDS);
+                log.info("Successfully completed S3 upload for snapshot: {}", provenance.snapshotName());
+            } catch (Exception uploadException) {
+                log.error("S3 upload failed for snapshot {}: {}",
+                    provenance.snapshotName(), uploadException.getMessage(), uploadException);
+                throw new RuntimeException("Failed to upload snapshot to S3", uploadException);
+            }
+
+            // Create a dummy future for cleanup
+            CompletableFuture<Void> cleanupFuture = CompletableFuture.completedFuture(null);
+            cleanupFuture.whenComplete((result, throwable) -> {
                     // Always release ByteBuf regardless of success or failure
                     try {
                         if (bufferToRelease.refCnt() > 0) {
