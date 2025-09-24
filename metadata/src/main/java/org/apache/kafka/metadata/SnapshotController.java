@@ -90,6 +90,13 @@ public class SnapshotController<T> {
         s3SnapshotConfig = config != null ? config : S3SnapshotConfig.disabled();
     }
 
+    /**
+     * Get the current S3 snapshot configuration.
+     */
+    public static S3SnapshotConfig getS3SnapshotConfig() {
+        return s3SnapshotConfig;
+    }
+
     public SnapshotController(
             Time time,
             ObjectStorage objectStorage,
@@ -582,7 +589,7 @@ public class SnapshotController<T> {
     /**
      * Load snapshot from S3 storage using the snapshot name with '.backup' suffix.
      */
-    public Optional<SnapshotReader<T>> loadSnapshotFromS3() {
+    public static Optional<SnapshotReader<ApiMessageAndVersion>> loadSnapshotFromS3() {
         try {
 
             OffsetAndEpoch snapshotId = new OffsetAndEpoch(30861, 27);
@@ -603,7 +610,7 @@ public class SnapshotController<T> {
             }
 
             // Convert byte array to SnapshotReader
-            SnapshotReader<T> reader = createSnapshotReaderFromBytes(snapshotData, snapshotId);
+            SnapshotReader<ApiMessageAndVersion> reader = createSnapshotReaderFromBytes(snapshotData, snapshotId);
             if (reader != null) {
                 log.info("Successfully created SnapshotReader from S3 data for snapshot: {}", snapshotId);
                 return Optional.of(reader);
@@ -622,7 +629,7 @@ public class SnapshotController<T> {
     /**
      * Read snapshot data from S3 using ObjectStorage.
      */
-    private byte[] readSnapshotDataFromS3(ObjectStorage objectStorage, String objectKey) {
+    private static byte[] readSnapshotDataFromS3(ObjectStorage objectStorage, String objectKey) {
         try {
             // Create ReadOptions with correct bucket ID (bucket 0 for data buckets)
             ObjectStorage.ReadOptions readOptions = new ObjectStorage.ReadOptions().bucket((short) 0);
@@ -655,13 +662,13 @@ public class SnapshotController<T> {
      * Create SnapshotReader from serialized byte array data read from S3.
      * This reverses the serialization process done by SnapshotEmitter.
      */
-    private SnapshotReader<T> createSnapshotReaderFromBytes(byte[] snapshotData, OffsetAndEpoch snapshotId) {
+    private static SnapshotReader<ApiMessageAndVersion> createSnapshotReaderFromBytes(byte[] snapshotData, OffsetAndEpoch snapshotId) {
         try {
             // Create a ByteArrayInputStream from the data
             ByteArrayInputStream bais = new ByteArrayInputStream(snapshotData);
 
             // Create a custom SnapshotReader that reads from the byte array
-            return new S3ByteArraySnapshotReader<>(bais, snapshotId, serde);
+            return new S3ByteArraySnapshotReader<>(bais, snapshotId, MetadataRecordSerde.INSTANCE);
 
         } catch (Exception e) {
             log.error("Failed to create SnapshotReader from byte array: {}", e.getMessage(), e);
