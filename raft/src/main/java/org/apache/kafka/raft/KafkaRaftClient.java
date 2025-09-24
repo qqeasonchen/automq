@@ -455,23 +455,20 @@ public final class KafkaRaftClient<T> implements RaftClient<T> {
         // First check for local snapshot
         Optional<RawSnapshotReader> localSnapshot = log.latestSnapshot();
 
-        // Check if S3 Kraft snapshot reading is enabled and no local snapshot exists
-        if (s3SnapshotConfig.isS3KraftSnapshotReadEnabled()
-            && (localSnapshot == null || !localSnapshot.isPresent())) {
-            logger.info("S3 Kraft snapshot reading is enabled and no local snapshot found, attempting to load snapshot from S3");
-
-            // Try to load snapshot from S3 when no local snapshot exists
-            Optional<SnapshotReader<T>> s3Snapshot = loadSnapshotFromS3();
-            if (s3Snapshot.isPresent()) {
-                logger.info("Successfully loaded snapshot from S3 storage");
-                // Write S3 snapshot to local expected location
-                writeS3SnapshotToLocal(s3Snapshot.get());
-                return s3Snapshot;
-            } else {
-                logger.warn("Failed to load snapshot from S3, no local snapshot available");
-                return Optional.empty();
-            }
-        }
+//        // Check if S3 Kraft snapshot reading is enabled and no local snapshot exists
+//        if (s3SnapshotConfig.isS3KraftSnapshotReadEnabled()
+//            && (localSnapshot == null || !localSnapshot.isPresent())) {
+//            logger.info("S3 Kraft snapshot reading is enabled and no local snapshot found, attempting to load snapshot from S3");
+//
+//            // Try to load snapshot from S3 when no local snapshot exists
+//            Optional<SnapshotReader<T>> s3Snapshot = loadSnapshotFromS3();
+//            if (s3Snapshot.isPresent()) {
+//                logger.info("Successfully loaded snapshot from S3 storage");
+//                // Write S3 snapshot to local expected location
+////                writeS3SnapshotToLocal(s3Snapshot.get());
+//                return s3Snapshot;
+//            }
+//        }
 
         // Return local snapshot if available
         return localSnapshot.map(reader ->
