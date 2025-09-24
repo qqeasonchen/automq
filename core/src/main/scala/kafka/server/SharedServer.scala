@@ -35,6 +35,7 @@ import org.apache.kafka.image.publisher.metrics.SnapshotEmitterMetrics
 import org.apache.kafka.image.publisher.{SnapshotEmitter, SnapshotGenerator}
 import org.apache.kafka.metadata.ListenerInfo
 import org.apache.kafka.metadata.MetadataRecordSerde
+import org.apache.kafka.metadata.SnapshotController
 import org.apache.kafka.metadata.properties.MetaPropertiesEnsemble
 import org.apache.kafka.raft.Endpoints
 import org.apache.kafka.server.ProcessRole
@@ -42,7 +43,6 @@ import org.apache.kafka.server.common.ApiMessageAndVersion
 import org.apache.kafka.server.fault.{FaultHandler, LoggingFaultHandler, ProcessTerminatingFaultHandler}
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
 
-import org.apache.kafka.raft.KafkaRaftClient
 import org.apache.kafka.server.common.S3SnapshotConfigFactory
 
 import java.net.InetSocketAddress
@@ -308,7 +308,7 @@ class SharedServer(
         } else {
           S3SnapshotConfigFactory.createDisabled()
         }
-        KafkaRaftClient.setS3SnapshotConfig(s3SnapshotConfig)
+        SnapshotController.setS3SnapshotConfig(s3SnapshotConfig)
         // AutoMQ inject end
 
         val _raftManager = new KafkaRaftManager[ApiMessageAndVersion](

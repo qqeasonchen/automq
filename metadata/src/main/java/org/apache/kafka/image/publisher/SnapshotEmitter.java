@@ -25,6 +25,7 @@ import org.apache.kafka.image.MetadataProvenance;
 import org.apache.kafka.image.publisher.metrics.SnapshotEmitterMetrics;
 import org.apache.kafka.image.writer.ImageWriterOptions;
 import org.apache.kafka.image.writer.RaftSnapshotWriter;
+import org.apache.kafka.metadata.MetadataRecordSerde;
 import org.apache.kafka.metadata.SnapshotController;
 import org.apache.kafka.queue.EventQueue;
 import org.apache.kafka.queue.KafkaEventQueue;
@@ -173,7 +174,7 @@ public class SnapshotEmitter implements SnapshotGenerator.Emitter {
     /**
      * S3SnapshotCoordinator for handling S3 snapshot operations.
      */
-    private final SnapshotController snapshotController;
+    private final SnapshotController<ApiMessageAndVersion> snapshotController;
 
     private SnapshotEmitter(
         Time time,
@@ -199,12 +200,13 @@ public class SnapshotEmitter implements SnapshotGenerator.Emitter {
 
         // Create and start snapshotController if ObjectStorage is available
         if (objectStorage != null) {
-            this.snapshotController = new SnapshotController(
+            this.snapshotController = new SnapshotController<>(
                 time,
                 objectStorage,
                 bucketName,
                 faultHandler,
-                threadNamePrefix
+                threadNamePrefix,
+                MetadataRecordSerde.INSTANCE
             );
             this.snapshotController.start();
         } else {
