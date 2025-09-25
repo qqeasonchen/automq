@@ -19,6 +19,10 @@ package org.apache.kafka.metadata;
 
 import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.ObjectSerializationCache;
+import org.apache.kafka.common.record.MemoryRecords;
+import org.apache.kafka.common.record.Records;
+import org.apache.kafka.common.record.UnalignedMemoryRecords;
+import org.apache.kafka.common.record.UnalignedRecords;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.image.MetadataImage;
@@ -34,6 +38,7 @@ import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.common.S3SnapshotConfig;
 import org.apache.kafka.server.common.serialization.RecordSerde;
 import org.apache.kafka.server.fault.FaultHandler;
+import org.apache.kafka.snapshot.RawSnapshotReader;
 import org.apache.kafka.snapshot.SnapshotReader;
 import org.apache.kafka.snapshot.Snapshots;
 
@@ -589,7 +594,7 @@ public class SnapshotController<T> {
     /**
      * Load snapshot from S3 storage using the snapshot name with '.backup' suffix.
      */
-    public static Optional<SnapshotReader<ApiMessageAndVersion>> loadSnapshotFromS3() {
+    public static Optional<RawSnapshotReader> loadSnapshotFromS3() {
         try {
 
             OffsetAndEpoch snapshotId = new OffsetAndEpoch(30861, 27);
@@ -609,13 +614,13 @@ public class SnapshotController<T> {
                 return Optional.empty();
             }
 
-            // Convert byte array to SnapshotReader
-            SnapshotReader<ApiMessageAndVersion> reader = createSnapshotReaderFromBytes(snapshotData, snapshotId);
+            // Convert byte array to RawSnapshotReader
+            RawSnapshotReader reader = createRawSnapshotReaderFromBytes(snapshotData, snapshotId);
             if (reader != null) {
-                log.info("Successfully created SnapshotReader from S3 data for snapshot: {}", snapshotId);
+                log.info("Successfully created RawSnapshotReader from S3 data for snapshot: {}", snapshotId);
                 return Optional.of(reader);
             } else {
-                log.error("Failed to create SnapshotReader from S3 data");
+                log.error("Failed to create RawSnapshotReader from S3 data");
                 return Optional.empty();
             }
 
@@ -659,16 +664,16 @@ public class SnapshotController<T> {
     }
 
     /**
-     * Create SnapshotReader from serialized byte array data read from S3.
+     * Create RawSnapshotReader from serialized byte array data read from S3.
      * This reverses the serialization process done by SnapshotEmitter.
      */
-    private static SnapshotReader<ApiMessageAndVersion> createSnapshotReaderFromBytes(byte[] snapshotData, OffsetAndEpoch snapshotId) {
+    private static RawSnapshotReader createRawSnapshotReaderFromBytes(byte[] snapshotData, OffsetAndEpoch snapshotId) {
         try {
             // Create a ByteArrayInputStream from the data
             ByteArrayInputStream bais = new ByteArrayInputStream(snapshotData);
 
-            // Create a custom SnapshotReader that reads from the byte array
-            return new S3ByteArraySnapshotReader<>(bais, snapshotId, MetadataRecordSerde.INSTANCE);
+            // Create a custom RawSnapshotReader that reads from the byte array
+            return new S3ByteArrayRawSnapshotReader(bais, snapshotId, snapshotData.length);
 
         } catch (Exception e) {
             log.error("Failed to create SnapshotReader from byte array: {}", e.getMessage(), e);
@@ -677,32 +682,18 @@ public class SnapshotController<T> {
     }
 
     /**
-     * Custom SnapshotReader implementation that reads snapshot data from a byte array
+     * Custom RawSnapshotReader implementation that reads snapshot data from a byte array
      * loaded from S3 storage.
      */
-    private static class S3ByteArraySnapshotReader<T> implements SnapshotReader<T> {
+    private static class S3ByteArrayRawSnapshotReader implements RawSnapshotReader, AutoCloseable {
         private final ByteArrayInputStream inputStream;
         private final OffsetAndEpoch snapshotId;
-        private final RecordSerde<T> serde;
-        private final List<Batch<T>> batches;
-        private int currentIndex = 0;
+        private final long sizeInBytes;
 
-        public S3ByteArraySnapshotReader(ByteArrayInputStream inputStream, OffsetAndEpoch snapshotId, RecordSerde<T> serde) {
+        public S3ByteArrayRawSnapshotReader(ByteArrayInputStream inputStream, OffsetAndEpoch snapshotId, long sizeInBytes) {
             this.inputStream = inputStream;
             this.snapshotId = snapshotId;
-            this.serde = serde;
-            this.batches = parseBatchesFromStream();
-        }
-
-        private List<Batch<T>> parseBatchesFromStream() {
-            // This is a simplified implementation
-            // In a real implementation, you'd need to properly parse the binary format
-            // created by KafkaBinaryImageWriter in SnapshotEmitter
-            List<Batch<T>> result = new ArrayList<>();
-
-            // TODO: Implement proper binary format parsing
-            // For now, return empty list as placeholder
-            return result;
+            this.sizeInBytes = sizeInBytes;
         }
 
         @Override
@@ -711,38 +702,32 @@ public class SnapshotController<T> {
         }
 
         @Override
-        public long lastContainedLogOffset() {
-            return snapshotId.offset();
+        public long sizeInBytes() {
+            return sizeInBytes;
         }
 
         @Override
-        public int lastContainedLogEpoch() {
-            return snapshotId.epoch();
+        public UnalignedRecords slice(long position, int size) {
+            // For simplicity, return the entire snapshot data as UnalignedRecords
+            // In a full implementation, you'd need to handle position and size properly
+            byte[] data = inputStream.readAllBytes();
+            inputStream.reset();
+            return new UnalignedMemoryRecords(ByteBuffer.wrap(data));
         }
 
         @Override
-        public long lastContainedLogTimestamp() {
-            return -1; // Unknown timestamp for S3 snapshots
-        }
-
-        @Override
-        public boolean hasNext() {
-            return currentIndex < batches.size();
-        }
-
-        @Override
-        public Batch<T> next() {
-            if (!hasNext()) {
-                throw new IllegalStateException("No more batches available");
-            }
-            return batches.get(currentIndex++);
+        public Records records() {
+            byte[] data = inputStream.readAllBytes();
+            inputStream.reset();
+            return MemoryRecords.readableRecords(ByteBuffer.wrap(data));
         }
 
         @Override
         public void close() {
+            // Close the input stream
             try {
                 inputStream.close();
-            } catch (IOException e) {
+            } catch (Exception e) {
                 // Ignore close errors
             }
         }

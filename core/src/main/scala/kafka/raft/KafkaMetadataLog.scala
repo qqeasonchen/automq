@@ -55,7 +55,7 @@ final class KafkaMetadataLog private (
   scheduler: Scheduler,
   // Access to this object needs to be synchronized because it is used by the snapshotting thread to notify the
   // polling thread when snapshots are created. This object is also used to store any opened snapshot reader.
-  snapshots: mutable.TreeMap[OffsetAndEpoch, Option[FileRawSnapshotReader]],
+  snapshots: mutable.TreeMap[OffsetAndEpoch, Option[RawSnapshotReader]],
   topicPartition: TopicPartition,
   config: MetadataLogConfig
 ) extends ReplicatedLog with Logging {
@@ -187,7 +187,7 @@ final class KafkaMetadataLog private (
           (true, forgetSnapshotsBefore(snapshotId))
         }
       case _ =>
-        (false, mutable.TreeMap.empty[OffsetAndEpoch, Option[FileRawSnapshotReader]])
+        (false, mutable.TreeMap.empty[OffsetAndEpoch, Option[RawSnapshotReader]])
     }
 
     removeSnapshots(forgottenSnapshots, FullTruncation)
@@ -373,7 +373,7 @@ final class KafkaMetadataLog private (
             val forgottenSnapshots = forgetSnapshotsBefore(snapshotId)
             (deletedSegments != 0 || forgottenSnapshots.nonEmpty, forgottenSnapshots)
         case _ =>
-          (false, mutable.TreeMap.empty[OffsetAndEpoch, Option[FileRawSnapshotReader]])
+          (false, mutable.TreeMap.empty[OffsetAndEpoch, Option[RawSnapshotReader]])
       }
     }
     removeSnapshots(forgottenSnapshots, reason)
@@ -507,7 +507,7 @@ final class KafkaMetadataLog private (
   @nowarn("cat=deprecation") // Needed for TreeMap.until
   private def forgetSnapshotsBefore(
     logStartSnapshotId: OffsetAndEpoch
-  ): mutable.TreeMap[OffsetAndEpoch, Option[FileRawSnapshotReader]] = {
+  ): mutable.TreeMap[OffsetAndEpoch, Option[RawSnapshotReader]] = {
     val expiredSnapshots = snapshots.until(logStartSnapshotId).clone()
     snapshots --= expiredSnapshots.keys
 
@@ -519,7 +519,7 @@ final class KafkaMetadataLog private (
    * given snapshots after some delay.
    */
   private def removeSnapshots(
-    expiredSnapshots: mutable.TreeMap[OffsetAndEpoch, Option[FileRawSnapshotReader]],
+    expiredSnapshots: mutable.TreeMap[OffsetAndEpoch, Option[RawSnapshotReader]],
     reason: SnapshotDeletionReason,
   ): Unit = {
     expiredSnapshots.foreach { case (snapshotId, _) =>
@@ -539,7 +539,12 @@ final class KafkaMetadataLog private (
   override def close(): Unit = {
     log.close()
     snapshots synchronized {
-      snapshots.values.flatten.foreach(_.close())
+      snapshots.values.flatten.foreach { reader =>
+        reader match {
+          case closeable: AutoCloseable => closeable.close()
+          case _ => // Do nothing for non-closeable readers
+        }
+      }
       snapshots.clear()
     }
   }
@@ -631,8 +636,8 @@ object KafkaMetadataLog extends Logging {
 
   private def recoverSnapshots(
     log: UnifiedLog
-  ): mutable.TreeMap[OffsetAndEpoch, Option[FileRawSnapshotReader]] = {
-    val snapshotsToRetain = mutable.TreeMap.empty[OffsetAndEpoch, Option[FileRawSnapshotReader]]
+  ): mutable.TreeMap[OffsetAndEpoch, Option[RawSnapshotReader]] = {
+    val snapshotsToRetain = mutable.TreeMap.empty[OffsetAndEpoch, Option[RawSnapshotReader]]
     val snapshotsToDelete = mutable.Buffer.empty[SnapshotPath]
 
     // Scan the log directory; deleting partial snapshots and older snapshot, only remembering immutable snapshots start
@@ -668,10 +673,14 @@ object KafkaMetadataLog extends Logging {
           s3SnapshotOpt.asScala match {
             case Some(s3Snapshot) =>
               info("Successfully loaded snapshot from S3 storage")
-              // Note: We need to handle the conversion from SnapshotReader<ApiMessageAndVersion> to
-              // the format expected by snapshotsToRetain (which expects FileRawSnapshotReader)
-              // For now, we log successful loading
-              info(s"S3 snapshot loaded with snapshotId: ${s3Snapshot.snapshotId()}")
+              val snapshotId = s3Snapshot.snapshotId()
+              info(s"S3 snapshot loaded with snapshotId: $snapshotId")
+
+              // Add the S3 snapshot to snapshotsToRetain
+              // We put Some(s3Snapshot) since we have the actual RawSnapshotReader
+              snapshotsToRetain.put(snapshotId, Some(s3Snapshot))
+              info(s"Added S3 snapshot $snapshotId to snapshots to retain")
+
             case None =>
               debug("No snapshot found in S3 storage or failed to load")
           }
@@ -711,12 +720,15 @@ object KafkaMetadataLog extends Logging {
 
   private def deleteSnapshotFiles(
     logDir: Path,
-    expiredSnapshots: mutable.TreeMap[OffsetAndEpoch, Option[FileRawSnapshotReader]],
+    expiredSnapshots: mutable.TreeMap[OffsetAndEpoch, Option[RawSnapshotReader]],
     logging: Logging
   ): Unit = {
     expiredSnapshots.foreach { case (snapshotId, snapshotReader) =>
       snapshotReader.foreach { reader =>
-        CoreUtils.swallow(reader.close(), logging)
+        reader match {
+          case closeable: AutoCloseable => CoreUtils.swallow(closeable.close(), logging)
+          case _ => // Do nothing for non-closeable readers
+        }
       }
       Snapshots.deleteIfExists(logDir, snapshotId)
     }
