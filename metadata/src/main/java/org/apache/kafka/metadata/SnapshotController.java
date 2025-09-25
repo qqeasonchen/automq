@@ -32,14 +32,12 @@ import org.apache.kafka.image.writer.ImageWriter;
 import org.apache.kafka.image.writer.ImageWriterOptions;
 import org.apache.kafka.metadata.stream.S3Object;
 import org.apache.kafka.queue.KafkaEventQueue;
-import org.apache.kafka.raft.Batch;
 import org.apache.kafka.raft.OffsetAndEpoch;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.common.S3SnapshotConfig;
 import org.apache.kafka.server.common.serialization.RecordSerde;
 import org.apache.kafka.server.fault.FaultHandler;
 import org.apache.kafka.snapshot.RawSnapshotReader;
-import org.apache.kafka.snapshot.SnapshotReader;
 import org.apache.kafka.snapshot.Snapshots;
 
 import com.automq.stream.s3.metadata.ObjectUtils;
@@ -730,6 +728,545 @@ public class SnapshotController<T> {
             } catch (Exception e) {
                 // Ignore close errors
             }
+        }
+    }
+
+    /**
+     * ======================= KRaft 目录级别备份和恢复功能 =======================
+     */
+
+    /**
+     * 将整个KRaft元数据目录打包并上传到S3
+     * @param kraftLogDir KRaft日志目录路径 (例如: D:\workspace_java\qqeasonchen\automq2\kraft-combined-logs-idc-b)
+     * @return 上传是否成功
+     */
+    public static boolean backupKRaftDirectoryToS3(String kraftLogDir) {
+        try {
+            log.info("Starting KRaft directory backup to S3: {}", kraftLogDir);
+
+            // 检查S3配置
+            if (s3SnapshotConfig == null || !s3SnapshotConfig.isS3KraftSnapshotWriteEnabled()) {
+                log.warn("S3 KRaft snapshot is not enabled, skipping directory backup");
+                return false;
+            }
+
+            ObjectStorage objectStorage = s3SnapshotConfig.getObjectStorage();
+            if (objectStorage == null) {
+                log.warn("ObjectStorage is not configured for S3 directory backup");
+                return false;
+            }
+
+            // 创建目录打包
+            byte[] zipData = createKRaftDirectoryZip(kraftLogDir);
+            if (zipData == null || zipData.length == 0) {
+                log.error("Failed to create KRaft directory zip package");
+                return false;
+            }
+
+            log.info("Created KRaft directory zip package: {} bytes", zipData.length);
+
+            // 生成S3对象key
+            String s3ObjectKey = generateKRaftDirectoryBackupKey();
+
+            // 上传到S3
+            return uploadZipToS3(objectStorage, s3ObjectKey, zipData);
+
+        } catch (Exception e) {
+            log.error("Error during KRaft directory backup to S3: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * 从S3恢复整个KRaft元数据目录
+     * @param kraftLogDir 目标KRaft日志目录路径
+     * @return 恢复是否成功
+     */
+    public static boolean restoreKRaftDirectoryFromS3(String kraftLogDir) {
+        try {
+            log.info("Starting KRaft directory restore from S3 to: {}", kraftLogDir);
+
+            // 检查S3配置
+            if (s3SnapshotConfig == null || !s3SnapshotConfig.isS3KraftSnapshotReadEnabled()) {
+                log.warn("S3 KRaft snapshot is not enabled, skipping directory restore");
+                return false;
+            }
+
+            ObjectStorage objectStorage = s3SnapshotConfig.getObjectStorage();
+            if (objectStorage == null) {
+                log.warn("ObjectStorage is not configured for S3 directory restore");
+                return false;
+            }
+
+            // 生成S3对象key
+            String s3ObjectKey = generateKRaftDirectoryBackupKey();
+
+            // 从S3下载zip数据
+            byte[] zipData = downloadZipFromS3(objectStorage, s3ObjectKey);
+            if (zipData == null || zipData.length == 0) {
+                log.error("Failed to download KRaft directory backup from S3");
+                return false;
+            }
+
+            log.info("Downloaded KRaft directory backup from S3: {} bytes", zipData.length);
+
+            // 恢复目录
+            return restoreKRaftDirectoryFromZip(kraftLogDir, zipData);
+
+        } catch (Exception e) {
+            log.error("Error during KRaft directory restore from S3: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * 创建KRaft目录的zip包
+     */
+    private static byte[] createKRaftDirectoryZip(String kraftLogDirPath) {
+        java.io.ByteArrayOutputStream baos = null;
+        java.util.zip.ZipOutputStream zos = null;
+
+        try {
+            java.io.File kraftLogDir = new java.io.File(kraftLogDirPath);
+            if (!kraftLogDir.exists() || !kraftLogDir.isDirectory()) {
+                log.error("KRaft log directory does not exist or is not a directory: {}", kraftLogDirPath);
+                return null;
+            }
+
+            baos = new java.io.ByteArrayOutputStream();
+            zos = new java.util.zip.ZipOutputStream(baos);
+
+            // 递归添加目录中的所有文件
+            addDirectoryToZip(kraftLogDir, "", zos);
+
+            zos.finish();
+            byte[] zipData = baos.toByteArray();
+
+            log.info("Successfully created KRaft directory zip: {} files, {} bytes",
+                    countFilesInDirectory(kraftLogDir), zipData.length);
+
+            return zipData;
+
+        } catch (Exception e) {
+            log.error("Failed to create KRaft directory zip: {}", e.getMessage(), e);
+            return null;
+        } finally {
+            try {
+                if (zos != null) zos.close();
+                if (baos != null) baos.close();
+            } catch (Exception e) {
+                log.warn("Error closing streams: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 递归添加目录到zip
+     */
+    private static void addDirectoryToZip(java.io.File sourceDir, String basePath, java.util.zip.ZipOutputStream zos)
+            throws java.io.IOException {
+        java.io.File[] files = sourceDir.listFiles();
+        if (files == null) return;
+
+        for (java.io.File file : files) {
+            String entryName = basePath.isEmpty() ? file.getName() : basePath + "/" + file.getName();
+
+            if (file.isDirectory()) {
+                // 添加目录条目
+                zos.putNextEntry(new java.util.zip.ZipEntry(entryName + "/"));
+                zos.closeEntry();
+
+                // 递归添加子目录
+                addDirectoryToZip(file, entryName, zos);
+            } else {
+                // 添加文件
+                zos.putNextEntry(new java.util.zip.ZipEntry(entryName));
+
+                try (java.io.FileInputStream fis = new java.io.FileInputStream(file)) {
+                    byte[] buffer = new byte[8192];
+                    int length;
+                    while ((length = fis.read(buffer)) > 0) {
+                        zos.write(buffer, 0, length);
+                    }
+                }
+
+                zos.closeEntry();
+                log.debug("Added file to zip: {} ({} bytes)", entryName, file.length());
+            }
+        }
+    }
+
+    /**
+     * 上传zip数据到S3
+     */
+    private static boolean uploadZipToS3(ObjectStorage objectStorage, String objectKey, byte[] zipData) {
+        ByteBuf zipByteBuf = null;
+
+        try {
+            log.info("Uploading KRaft directory backup to S3: key={}, size={} bytes", objectKey, zipData.length);
+
+            // 创建ByteBuf
+            zipByteBuf = Unpooled.wrappedBuffer(zipData);
+
+            // 创建WriteOptions
+            ObjectStorage.WriteOptions writeOptions = new ObjectStorage.WriteOptions();
+
+            // 上传策略：根据文件大小选择直接上传或分片上传
+            CompletableFuture<Void> uploadFuture;
+            Writer writer = null;
+
+            if (zipData.length < Writer.MIN_PART_SIZE) {
+                // 小文件直接上传
+                log.info("Using direct S3 PUT for KRaft backup ({} bytes)", zipData.length);
+                uploadFuture = objectStorage.write(writeOptions, objectKey, zipByteBuf)
+                    .thenApply(writeResult -> {
+                        log.info("Successfully uploaded KRaft directory backup to S3 using direct PUT");
+                        return null;
+                    });
+            } else {
+                // 大文件分片上传
+                log.info("Using MultiPartWriter for KRaft backup ({} bytes)", zipData.length);
+                writer = objectStorage.writer(writeOptions, objectKey);
+
+                final Writer writerToRelease = writer;
+                uploadFuture = writer.write(zipByteBuf)
+                    .thenCompose(v -> {
+                        log.info("KRaft backup data written to writer, closing...");
+                        return writerToRelease.close();
+                    })
+                    .whenComplete((result, throwable) -> {
+                        // 释放writer资源
+                        try {
+                            writerToRelease.release().get(10, TimeUnit.SECONDS);
+                            log.trace("Successfully released writer resources for KRaft backup");
+                        } catch (Exception releaseException) {
+                            log.warn("Error releasing writer resources for KRaft backup: {}", releaseException.getMessage());
+                        }
+                    });
+            }
+
+            // 等待上传完成
+            uploadFuture.get(300, TimeUnit.SECONDS); // 5分钟超时
+            log.info("Successfully uploaded KRaft directory backup to S3: {}", objectKey);
+            return true;
+
+        } catch (Exception e) {
+            log.error("Failed to upload KRaft directory backup to S3: {}", e.getMessage(), e);
+            return false;
+        } finally {
+            // 释放ByteBuf
+            if (zipByteBuf != null && zipByteBuf.refCnt() > 0) {
+                try {
+                    zipByteBuf.release();
+                    log.trace("Released ByteBuf for KRaft directory backup");
+                } catch (Exception releaseException) {
+                    log.warn("Error releasing ByteBuf for KRaft backup: {}", releaseException.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * 从S3下载zip数据
+     */
+    private static byte[] downloadZipFromS3(ObjectStorage objectStorage, String objectKey) {
+        try {
+            log.info("Downloading KRaft directory backup from S3: {}", objectKey);
+
+            // 创建ReadOptions
+            ObjectStorage.ReadOptions readOptions = new ObjectStorage.ReadOptions().bucket((short) 0);
+
+            // 从S3读取数据
+            CompletableFuture<ByteBuf> future = objectStorage.read(readOptions, objectKey);
+            ByteBuf byteBuf = future.get(300, TimeUnit.SECONDS); // 5分钟超时
+
+            if (byteBuf == null) {
+                log.error("Failed to download KRaft backup from S3: received null data");
+                return null;
+            }
+
+            try {
+                byte[] zipData = new byte[byteBuf.readableBytes()];
+                byteBuf.readBytes(zipData);
+
+                log.info("Successfully downloaded KRaft directory backup from S3: {} bytes", zipData.length);
+                return zipData;
+
+            } finally {
+                byteBuf.release();
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to download KRaft directory backup from S3 object {}: {}", objectKey, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * 从zip数据恢复KRaft目录
+     */
+    private static boolean restoreKRaftDirectoryFromZip(String kraftLogDirPath, byte[] zipData) {
+        java.io.File tempDir = null;
+
+        try {
+            log.info("Restoring KRaft directory from zip data: {} bytes to {}", zipData.length, kraftLogDirPath);
+
+            // 创建临时目录
+            tempDir = java.nio.file.Files.createTempDirectory("kraft-restore").toFile();
+            log.debug("Created temporary directory for restoration: {}", tempDir.getAbsolutePath());
+
+            // 解压zip到临时目录
+            if (!extractZipToDirectory(zipData, tempDir)) {
+                log.error("Failed to extract KRaft backup zip to temporary directory");
+                return false;
+            }
+
+            // 验证解压后的内容
+            java.io.File[] extractedDirs = tempDir.listFiles(java.io.File::isDirectory);
+            if (extractedDirs == null || extractedDirs.length == 0) {
+                log.error("No directories found in extracted KRaft backup");
+                return false;
+            }
+
+            java.io.File sourceDir = extractedDirs[0]; // 取第一个目录
+            log.info("Found extracted KRaft directory: {}", sourceDir.getName());
+
+            // 验证目录结构
+            if (!validateKRaftDirectory(sourceDir)) {
+                log.error("KRaft directory validation failed");
+                return false;
+            }
+
+            // 清理目标目录
+            java.io.File targetDir = new java.io.File(kraftLogDirPath);
+            if (targetDir.exists()) {
+                log.info("Cleaning existing KRaft directory: {}", kraftLogDirPath);
+                if (!deleteDirectoryRecursively(targetDir)) {
+                    log.error("Failed to clean existing KRaft directory");
+                    return false;
+                }
+            }
+
+            // 创建父目录
+            targetDir.getParentFile().mkdirs();
+
+            // 复制解压后的目录到目标位置
+            if (!copyDirectoryRecursively(sourceDir, targetDir)) {
+                log.error("Failed to copy restored KRaft directory");
+                return false;
+            }
+
+            log.info("Successfully restored KRaft directory: {} files", countFilesInDirectory(targetDir));
+            return true;
+
+        } catch (Exception e) {
+            log.error("Failed to restore KRaft directory from zip: {}", e.getMessage(), e);
+            return false;
+        } finally {
+            // 清理临时目录
+            if (tempDir != null && tempDir.exists()) {
+                try {
+                    deleteDirectoryRecursively(tempDir);
+                    log.debug("Cleaned up temporary directory: {}", tempDir.getAbsolutePath());
+                } catch (Exception e) {
+                    log.warn("Failed to clean temporary directory: {}", e.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * 解压zip数据到目录
+     */
+    private static boolean extractZipToDirectory(byte[] zipData, java.io.File targetDir) {
+        try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(
+                new java.io.ByteArrayInputStream(zipData))) {
+
+            java.util.zip.ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                java.io.File file = new java.io.File(targetDir, entry.getName());
+
+                if (entry.isDirectory()) {
+                    file.mkdirs();
+                } else {
+                    // 创建父目录
+                    file.getParentFile().mkdirs();
+
+                    // 写入文件内容
+                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(file)) {
+                        byte[] buffer = new byte[8192];
+                        int length;
+                        while ((length = zis.read(buffer)) > 0) {
+                            fos.write(buffer, 0, length);
+                        }
+                    }
+
+                    log.debug("Extracted file: {} ({} bytes)", entry.getName(), file.length());
+                }
+
+                zis.closeEntry();
+            }
+
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to extract zip data to directory: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * 验证KRaft目录结构
+     */
+    private static boolean validateKRaftDirectory(java.io.File dir) {
+        if (!dir.exists() || !dir.isDirectory()) {
+            log.error("KRaft directory does not exist: {}", dir.getAbsolutePath());
+            return false;
+        }
+
+        // 检查关键文件
+        String[] criticalFiles = {"meta.properties"};
+        for (String fileName : criticalFiles) {
+            if (!new java.io.File(dir, fileName).exists()) {
+                log.error("Critical file missing in KRaft directory: {}", fileName);
+                return false;
+            }
+        }
+
+        // 检查__cluster_metadata-0目录
+        java.io.File metadataDir = new java.io.File(dir, "__cluster_metadata-0");
+        if (!metadataDir.exists() || !metadataDir.isDirectory()) {
+            log.error("__cluster_metadata-0 directory missing in KRaft backup");
+            return false;
+        }
+
+        log.info("KRaft directory validation passed");
+        return true;
+    }
+
+    /**
+     * 递归复制目录
+     */
+    private static boolean copyDirectoryRecursively(java.io.File source, java.io.File target) {
+        try {
+            if (source.isDirectory()) {
+                if (!target.exists()) {
+                    target.mkdirs();
+                }
+
+                java.io.File[] files = source.listFiles();
+                if (files != null) {
+                    for (java.io.File file : files) {
+                        java.io.File targetFile = new java.io.File(target, file.getName());
+                        if (!copyDirectoryRecursively(file, targetFile)) {
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                java.nio.file.Files.copy(
+                    source.toPath(),
+                    target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                );
+                log.debug("Copied file: {} ({} bytes)", source.getName(), source.length());
+            }
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to copy {} to {}: {}", source.getAbsolutePath(), target.getAbsolutePath(), e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * 递归删除目录
+     */
+    private static boolean deleteDirectoryRecursively(java.io.File dir) {
+        try {
+            if (dir.exists()) {
+                if (dir.isDirectory()) {
+                    java.io.File[] files = dir.listFiles();
+                    if (files != null) {
+                        for (java.io.File file : files) {
+                            if (!deleteDirectoryRecursively(file)) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                return dir.delete();
+            }
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to delete {}: {}", dir.getAbsolutePath(), e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * 生成KRaft目录备份的S3对象key
+     */
+    private static String generateKRaftDirectoryBackupKey() {
+        // 使用人类可读的时间格式：年月日小时分钟 (yyyyMMdd_HHmm)
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        java.time.format.DateTimeFormatter formatter = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmm");
+        String timestamp = now.format(formatter);
+
+        return "kraft_directory_backup/kraft-metadata-" + timestamp + ".zip";
+    }
+
+    /**
+     * 统计目录中的文件数量
+     */
+    private static int countFilesInDirectory(java.io.File dir) {
+        if (!dir.exists() || !dir.isDirectory()) {
+            return 0;
+        }
+
+        int count = 0;
+        java.io.File[] files = dir.listFiles();
+        if (files != null) {
+            for (java.io.File file : files) {
+                if (file.isDirectory()) {
+                    count += countFilesInDirectory(file);
+                } else {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 便捷方法：检查是否需要从S3恢复KRaft目录
+     */
+    public static boolean shouldRestoreKRaftDirectoryFromS3(String kraftLogDirPath) {
+        try {
+            java.io.File kraftLogDir = new java.io.File(kraftLogDirPath);
+
+            // 目录不存在
+            if (!kraftLogDir.exists()) {
+                log.info("KRaft log directory does not exist, should restore from S3");
+                return true;
+            }
+
+            // 目录为空
+            java.io.File[] files = kraftLogDir.listFiles();
+            if (files == null || files.length == 0) {
+                log.info("KRaft log directory is empty, should restore from S3");
+                return true;
+            }
+
+            // 检查关键文件是否存在
+            if (!new java.io.File(kraftLogDir, "meta.properties").exists() ||
+                !new java.io.File(kraftLogDir, "__cluster_metadata-0").exists()) {
+                log.info("Critical KRaft files missing, should restore from S3");
+                return true;
+            }
+
+            return false;
+        } catch (Exception e) {
+            log.warn("Error checking KRaft directory restore status: {}", e.getMessage());
+            return false;
         }
     }
 }

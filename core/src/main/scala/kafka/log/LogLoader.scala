@@ -451,15 +451,53 @@ class LogLoader(
     val logEndOffsetOption = deleteSegmentsIfLogStartGreaterThanLogEnd()
 
     if (segments.isEmpty) {
-      // no existing segments, create a new mutable segment beginning at logStartOffset
-      segments.add(
-        LogSegment.open(
-          dir,
-          logStartOffsetCheckpoint,
-          config,
-          time,
-          config.initFileSize,
-          config.preallocate))
+      // First try directory-level recovery from S3 (much simpler and more reliable)
+      val kraftDirRecoveryHelper = new KRaftDirectoryRecoveryHelper(
+        dir.getParentFile, // kraft-combined-logs-idc-b directory
+        time
+      )
+
+      if (kraftDirRecoveryHelper.shouldAttemptDirectoryRecovery()) {
+        info("Attempting directory-level KRaft recovery from S3...")
+        // TODO: Implement S3 integration for directory backup/restore
+        // For now, this will just check the directory state
+      }
+
+      // Fallback: Try to recover from S3 checkpoint before creating new segment
+      val checkpointRecoveryHelper = new CheckpointRecoveryHelperFixed(
+        dir,
+        topicPartition,
+        config,
+        time,
+        leaderEpochCache,
+        producerStateManager
+      )
+
+      val recoveredSegment = if (checkpointRecoveryHelper.shouldAttemptS3Recovery()) {
+        info("Attempting recovery from S3 checkpoint...")
+        checkpointRecoveryHelper.recoverFromS3Checkpoint()
+      } else {
+        info("S3 checkpoint recovery not available or disabled")
+        None
+      }
+
+      recoveredSegment match {
+        case Some(segment) =>
+          info(s"Successfully recovered segment from S3 checkpoint: baseOffset=${segment.baseOffset}, " +
+               s"nextOffset=${segment.readNextOffset}")
+          segments.add(segment)
+        case None =>
+          info("S3 checkpoint recovery failed or not available, creating new segment from logStartOffset")
+          // no existing segments and no S3 recovery, create a new mutable segment beginning at logStartOffset
+          segments.add(
+            LogSegment.open(
+              dir,
+              logStartOffsetCheckpoint,
+              config,
+              time,
+              config.initFileSize,
+              config.preallocate))
+      }
     }
 
     // Update the recovery point if there was a clean shutdown and did not perform any changes to
