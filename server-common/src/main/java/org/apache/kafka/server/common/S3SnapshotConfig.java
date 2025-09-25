@@ -62,6 +62,7 @@ public class S3SnapshotConfig {
     private final List<DataBucket> dataBuckets;
     private final boolean objectTagging;
     private final List<String> logDirs;
+    private final String restoreTimestamp;
 
     /**
      * Create a new S3SnapshotConfig instance.
@@ -72,15 +73,17 @@ public class S3SnapshotConfig {
      * @param dataBuckets List of data buckets for S3 operations
      * @param objectTagging Whether object tagging is enabled
      * @param logDirs List of log directories from log.dirs configuration
+     * @param restoreTimestamp Target timestamp for KRaft snapshot restore (format: yyyyMMdd_HHmm)
      */
     public S3SnapshotConfig(boolean s3KraftSnapshotReadEnabled, boolean s3KraftSnapshotWriteEnabled, ObjectStorage objectStorage,
-                           List<DataBucket> dataBuckets, boolean objectTagging, List<String> logDirs) {
+                           List<DataBucket> dataBuckets, boolean objectTagging, List<String> logDirs, String restoreTimestamp) {
         this.s3KraftSnapshotReadEnabled = s3KraftSnapshotReadEnabled;
         this.s3KraftSnapshotWriteEnabled = s3KraftSnapshotWriteEnabled;
         this.objectStorage = objectStorage;
         this.dataBuckets = dataBuckets;
         this.objectTagging = objectTagging;
         this.logDirs = logDirs;
+        this.restoreTimestamp = restoreTimestamp;
     }
 
     /**
@@ -91,7 +94,7 @@ public class S3SnapshotConfig {
      * @param objectStorage The ObjectStorage instance for S3 operations, can be null if disabled
      */
     public S3SnapshotConfig(boolean s3KraftSnapshotReadEnabled, boolean s3KraftSnapshotWriteEnabled, ObjectStorage objectStorage) {
-        this(s3KraftSnapshotReadEnabled, s3KraftSnapshotWriteEnabled, objectStorage, null, false, null);
+        this(s3KraftSnapshotReadEnabled, s3KraftSnapshotWriteEnabled, objectStorage, null, false, null, null);
     }
 
     /**
@@ -144,6 +147,15 @@ public class S3SnapshotConfig {
     }
 
     /**
+     * Get the target timestamp for KRaft snapshot restore.
+     *
+     * @return Target timestamp string (format: yyyyMMdd_HHmm), or null if not configured
+     */
+    public String getRestoreTimestamp() {
+        return restoreTimestamp;
+    }
+
+    /**
      * Create a disabled S3SnapshotConfig instance.
      *
      * @return S3SnapshotConfig with S3 snapshot reading disabled
@@ -161,6 +173,7 @@ public class S3SnapshotConfig {
             ", dataBuckets=" + (dataBuckets != null ? dataBuckets.size() + " buckets" : "null") +
             ", objectTagging=" + objectTagging +
             ", logDirs=" + (logDirs != null ? logDirs.size() + " directories" : "null") +
+            ", restoreTimestamp=" + restoreTimestamp +
             '}';
     }
 }

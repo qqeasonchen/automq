@@ -156,6 +156,10 @@ public class AutoMQConfig {
     public static final String S3_KRAFT_SNAPSHOT_WRITE_ENABLE_DOC = "Enable writing Kraft snapshots to S3 storage for backup purposes. When enabled, the system will automatically backup metadata snapshots to S3 storage after they are generated locally.";
     public static final boolean S3_KRAFT_SNAPSHOT_WRITE_ENABLE_DEFAULT = false;
 
+    public static final String S3_KRAFT_SNAPSHOT_RESTORE_TIMESTAMP_CONFIG = "s3.kraft.snapshot.restore.timestamp";
+    public static final String S3_KRAFT_SNAPSHOT_RESTORE_TIMESTAMP_DOC = "Target timestamp for KRaft snapshot restore from S3 storage. Format: yyyyMMdd_HHmm (e.g., 202509251930). If not specified, automatic restore will be skipped and manual restore will be required.";
+    public static final String S3_KRAFT_SNAPSHOT_RESTORE_TIMESTAMP_DEFAULT = null;
+
     public static final String S3_OBJECT_LOG_ENABLE_CONFIG = "s3.object.log.enable";
     public static final String S3_OBJECT_LOG_ENABLE_DOC = "Whether to enable S3 object trace log.";
 
@@ -290,6 +294,7 @@ public class AutoMQConfig {
             .define(AutoMQConfig.S3_OBJECT_DELETION_MINUTES_CONFIG, LONG, S3_OBJECT_DELETE_RETENTION_MINUTES, MEDIUM, AutoMQConfig.S3_OBJECT_DELETION_MINUTES_DOC)
             .define(AutoMQConfig.S3_KRAFT_SNAPSHOT_READ_ENABLE_CONFIG, BOOLEAN, S3_KRAFT_SNAPSHOT_READ_ENABLE_DEFAULT, MEDIUM, AutoMQConfig.S3_KRAFT_SNAPSHOT_READ_ENABLE_DOC)
             .define(AutoMQConfig.S3_KRAFT_SNAPSHOT_WRITE_ENABLE_CONFIG, BOOLEAN, S3_KRAFT_SNAPSHOT_WRITE_ENABLE_DEFAULT, MEDIUM, AutoMQConfig.S3_KRAFT_SNAPSHOT_WRITE_ENABLE_DOC)
+            .define(AutoMQConfig.S3_KRAFT_SNAPSHOT_RESTORE_TIMESTAMP_CONFIG, STRING, S3_KRAFT_SNAPSHOT_RESTORE_TIMESTAMP_DEFAULT, MEDIUM, AutoMQConfig.S3_KRAFT_SNAPSHOT_RESTORE_TIMESTAMP_DOC)
             .define(AutoMQConfig.S3_NETWORK_BASELINE_BANDWIDTH_CONFIG, LONG, S3_NETWORK_BASELINE_BANDWIDTH, MEDIUM, AutoMQConfig.S3_NETWORK_BASELINE_BANDWIDTH_DOC)
             .define(AutoMQConfig.S3_NETWORK_REFILL_PERIOD_MS_CONFIG, INT, S3_REFILL_PERIOD_MS, MEDIUM, AutoMQConfig.S3_NETWORK_REFILL_PERIOD_MS_DOC)
             .define(AutoMQConfig.S3_TELEMETRY_METRICS_LEVEL_CONFIG, STRING, "INFO", MEDIUM, AutoMQConfig.S3_TELEMETRY_METRICS_LEVEL_DOC)
@@ -327,6 +332,7 @@ public class AutoMQConfig {
     private Optional<BucketURI> zoneRouterChannels;
     private boolean s3KraftSnapshotReadEnabled;
     private boolean s3KraftSnapshotWriteEnabled;
+    private String s3KraftSnapshotRestoreTimestamp;
 
     public AutoMQConfig setup(KafkaConfig config) {
         dataBuckets = genDataBuckets(config);
@@ -337,6 +343,7 @@ public class AutoMQConfig {
         zoneRouterChannels = genZoneRouterChannels(config);
         s3KraftSnapshotReadEnabled = config.getBoolean(S3_KRAFT_SNAPSHOT_READ_ENABLE_CONFIG);
         s3KraftSnapshotWriteEnabled = config.getBoolean(S3_KRAFT_SNAPSHOT_WRITE_ENABLE_CONFIG);
+        s3KraftSnapshotRestoreTimestamp = config.getString(S3_KRAFT_SNAPSHOT_RESTORE_TIMESTAMP_CONFIG);
         return this;
     }
 
@@ -370,6 +377,10 @@ public class AutoMQConfig {
 
     public boolean s3KraftSnapshotWriteEnabled() {
         return s3KraftSnapshotWriteEnabled;
+    }
+
+    public String s3KraftSnapshotRestoreTimestamp() {
+        return s3KraftSnapshotRestoreTimestamp;
     }
 
     private static List<BucketURI> genDataBuckets(KafkaConfig config) {

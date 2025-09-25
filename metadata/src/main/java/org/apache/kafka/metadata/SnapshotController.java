@@ -132,52 +132,28 @@ public class SnapshotController<T> {
         CompletableFuture<Boolean> result = new CompletableFuture<>();
 
         eventQueue.append(() -> {
+            //Backup KRaft directory to S3 after successful snapshot
             try {
-                log.info("Starting S3 snapshot operations for snapshot {}", provenance.snapshotName());
-                // Step 1: Verify S3 objects in the metadata image
-                //boolean verificationResult = verifyS3Objects(metadataImage);
-                if (true) {
-//                    log.info("Successfully verified snapshot {} - all S3 objects confirmed to exist",
-//                        provenance.snapshotName());
-                    // Step 2: Write snapshot to S3 after successful verification
-//                    log.info("Starting write snapshot to S3, snapshot:{}",
-//                        provenance.snapshotName());
-//                    writeSnapshotToS3(metadataImage, provenance);
-
-                    // Step 3: Backup KRaft directory to S3 after successful snapshot
-                    try {
-                        if (getS3SnapshotConfig() != null && getS3SnapshotConfig().isS3KraftSnapshotWriteEnabled()) {
-                            String kraftLogDir = getKraftLogDirectory();
-                            if (kraftLogDir != null) {
-                                log.info("Starting KRaft directory backup to S3 for directory: {}", kraftLogDir);
-                                boolean backupSuccess = backupKRaftDirectoryToS3(kraftLogDir);
-                                if (backupSuccess) {
-                                    log.info("Successfully backed up KRaft directory to S3: {}", kraftLogDir);
-                                } else {
-                                    log.warn("Failed to backup KRaft directory to S3: {}", kraftLogDir);
-                                }
-                            } else {
-                                log.warn("KRaft log directory not configured, skipping directory backup");
-                            }
+                if (getS3SnapshotConfig() != null && getS3SnapshotConfig().isS3KraftSnapshotWriteEnabled()) {
+                    String kraftLogDir = getKraftLogDirectory();
+                    if (kraftLogDir != null) {
+                        log.info("Starting KRaft directory backup to S3 for directory: {}", kraftLogDir);
+                        boolean backupSuccess = backupKRaftDirectoryToS3(kraftLogDir);
+                        if (backupSuccess) {
+                            log.info("Successfully backed up KRaft directory to S3: {}", kraftLogDir);
                         } else {
-                            log.debug("S3 KRaft snapshot write is disabled, skipping directory backup");
+                            log.warn("Failed to backup KRaft directory to S3: {}", kraftLogDir);
                         }
-                    } catch (Exception e) {
-                        log.error("Error during KRaft directory backup", e);
-                        // Don't fail the snapshot operation due to backup failure
+                    } else {
+                        log.warn("KRaft log directory not configured, skipping directory backup");
                     }
-
-                    result.complete(true);
                 } else {
-                    log.error("Failed to verify snapshot {} - some S3 objects are missing or verification failed",
-                        provenance.snapshotName());
-                    result.complete(false);
+                    log.debug("S3 KRaft snapshot write is disabled, skipping directory backup");
                 }
-
             } catch (Exception e) {
-                log.error("Error during snapshot operations for {}", provenance.snapshotName(), e);
-                result.completeExceptionally(e);
+                log.error("Error during KRaft directory backup", e);
             }
+            result.complete(true);
         });
 
         return result;
@@ -779,19 +755,15 @@ public class SnapshotController<T> {
                 log.warn("ObjectStorage is not configured for S3 directory backup");
                 return false;
             }
-
             // 创建目录打包（使用安全模式，跳过锁定文件）
             byte[] zipData = createKRaftDirectoryZipSafely(kraftLogDir);
             if (zipData == null || zipData.length == 0) {
                 log.error("Failed to create KRaft directory zip package");
                 return false;
             }
-
             log.info("Created KRaft directory zip package: {} bytes", zipData.length);
-
             // 生成S3对象key
-            String s3ObjectKey = generateKRaftDirectoryBackupKey();
-
+            String s3ObjectKey = generateKRaftDirectoryBackupKeyByNowTime();
             // 上传到S3
             return uploadZipToS3(objectStorage, s3ObjectKey, zipData);
 
@@ -822,8 +794,17 @@ public class SnapshotController<T> {
                 return false;
             }
 
+            // 获取恢复时间戳
+            String restoreTimestamp = s3SnapshotConfig.getRestoreTimestamp();
+            if (restoreTimestamp == null || restoreTimestamp.trim().isEmpty()) {
+                log.warn("Restore timestamp is not configured, skipping directory restore. Please set s3.kraft.snapshot.restore.timestamp in configuration");
+                return false;
+            }
+
+            log.info("Attempting to restore KRaft directory from S3 backup with timestamp: {}", restoreTimestamp);
+
             // 生成S3对象key
-            String s3ObjectKey = generateKRaftDirectoryBackupKey();
+            String s3ObjectKey = generateKRaftDirectoryBackupKeyByTime(restoreTimestamp);
 
             // 从S3下载zip数据
             byte[] zipData = downloadZipFromS3(objectStorage, s3ObjectKey);
@@ -1155,7 +1136,7 @@ public class SnapshotController<T> {
                     .whenComplete((result, throwable) -> {
                         // 释放writer资源
                         try {
-                            writerToRelease.release().get(10, TimeUnit.SECONDS);
+                            writerToRelease.release().get(30, TimeUnit.SECONDS);
                             log.trace("Successfully released writer resources for KRaft backup");
                         } catch (Exception releaseException) {
                             log.warn("Error releasing writer resources for KRaft backup: {}", releaseException.getMessage());
@@ -1423,14 +1404,22 @@ public class SnapshotController<T> {
     /**
      * 生成KRaft目录备份的S3对象key
      */
-    private static String generateKRaftDirectoryBackupKey() {
-        // 使用人类可读的时间格式：年月日小时分钟 (yyyyMMdd_HHmm)
-//        java.time.LocalDateTime now = java.time.LocalDateTime.now();
-//        java.time.format.DateTimeFormatter formatter = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmm");
-//        String timestamp = now.format(formatter);
-        String timestamp = "2025092519";
+    private static String generateKRaftDirectoryBackupKeyByNowTime() {
+        // 使用人类可读的时间格式：年月日小时分钟 (yyyyMMddHHmm)
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        java.time.format.DateTimeFormatter formatter = java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmm");
+        String timestamp = now.format(formatter);
+//        String timestamp = "2025092519";
         return "kraft_directory_backup/kraft-metadata-" + timestamp + ".zip";
     }
+
+    private static String generateKRaftDirectoryBackupKeyByTime(String timestamp) {
+        // 使用人类可读的时间格式：年月日小时分钟 (yyyyMMdd_HHmm)
+//        String timestamp = "2025092519";
+        return "kraft_directory_backup/kraft-metadata-" + timestamp + ".zip";
+    }
+
+
 
     /**
      * 统计目录中的文件数量

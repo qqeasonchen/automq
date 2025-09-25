@@ -304,7 +304,8 @@ class SharedServer(
             autoMQConfig.s3KraftSnapshotWriteEnabled(),
             autoMQConfig.dataBuckets(),
             s3Config.objectTagging(),
-            sharedServerConfig.logDirs.asJava
+            sharedServerConfig.logDirs.asJava,
+            autoMQConfig.s3KraftSnapshotRestoreTimestamp()
           )
         } else {
           S3SnapshotConfigFactory.createDisabled()

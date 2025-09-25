@@ -50,12 +50,13 @@ public class S3SnapshotConfigFactory {
      * @param dataBuckets Parsed list of bucket URIs from AutoMQConfig
      * @param objectTaggingMap Object tagging configuration map
      * @param logDirs List of log directories from log.dirs configuration
+     * @param restoreTimestamp Target timestamp for KRaft snapshot restore (format: yyyyMMdd_HHmm)
      * @return S3SnapshotConfig instance with ObjectStorage created internally
      */
     public static S3SnapshotConfig createWithObjectStorage(
         boolean s3KraftSnapshotReadEnabled,
         boolean s3KraftSnapshotWriteEnabled,
-        List<BucketURI> dataBuckets, Map<String, String> objectTaggingMap, List<String> logDirs) {
+        List<BucketURI> dataBuckets, Map<String, String> objectTaggingMap, List<String> logDirs, String restoreTimestamp) {
         try {
             ObjectStorage objectStorage = null;
             List<S3SnapshotConfig.DataBucket> configDataBuckets = null;
@@ -75,11 +76,11 @@ public class S3SnapshotConfigFactory {
                 }
             }
 
-            logger.info("Creating S3SnapshotConfig with s3KraftSnapshotWriteEnabled={}, dataBuckets={}, objectTagging={}, logDirs={}, objectStorage={}",
+            logger.info("Creating S3SnapshotConfig with s3KraftSnapshotWriteEnabled={}, dataBuckets={}, objectTagging={}, logDirs={}, restoreTimestamp={}, objectStorage={}",
                 s3KraftSnapshotWriteEnabled, configDataBuckets != null ? configDataBuckets.size() + " buckets" : "null",
-                objectTagging, logDirs != null ? logDirs.size() + " directories" : "null", objectStorage != null ? "configured" : "null");
+                objectTagging, logDirs != null ? logDirs.size() + " directories" : "null", restoreTimestamp, objectStorage != null ? "configured" : "null");
 
-            return new S3SnapshotConfig(s3KraftSnapshotReadEnabled, s3KraftSnapshotWriteEnabled, objectStorage, configDataBuckets, objectTagging, logDirs);
+            return new S3SnapshotConfig(s3KraftSnapshotReadEnabled, s3KraftSnapshotWriteEnabled, objectStorage, configDataBuckets, objectTagging, logDirs, restoreTimestamp);
 
         } catch (Exception e) {
             logger.warn("Failed to create S3SnapshotConfig with ObjectStorage from configuration, using disabled configuration: {}", e.getMessage());
@@ -89,7 +90,26 @@ public class S3SnapshotConfigFactory {
 
     /**
      * Create S3SnapshotConfig with ObjectStorage creation from parsed configuration (backward compatibility).
-     * This method is provided for backward compatibility with code that doesn't pass logDirs.
+     * This method is provided for backward compatibility with code that doesn't pass logDirs and restoreTimestamp.
+     *
+     * @param s3KraftSnapshotReadEnabled Whether S3 Kraft snapshot reading is enabled
+     * @param s3KraftSnapshotWriteEnabled Whether S3 Kraft snapshot writing is enabled
+     * @param dataBuckets Parsed list of bucket URIs from AutoMQConfig
+     * @param objectTaggingMap Object tagging configuration map
+     * @param logDirs List of log directories from log.dirs configuration
+     * @return S3SnapshotConfig instance with ObjectStorage created internally
+     */
+    public static S3SnapshotConfig createWithObjectStorage(
+        boolean s3KraftSnapshotReadEnabled,
+        boolean s3KraftSnapshotWriteEnabled,
+        List<BucketURI> dataBuckets, Map<String, String> objectTaggingMap, List<String> logDirs) {
+        return createWithObjectStorage(s3KraftSnapshotReadEnabled, s3KraftSnapshotWriteEnabled,
+            dataBuckets, objectTaggingMap, logDirs, null);
+    }
+
+    /**
+     * Create S3SnapshotConfig with ObjectStorage creation from parsed configuration (backward compatibility).
+     * This method is provided for backward compatibility with code that doesn't pass logDirs and restoreTimestamp.
      *
      * @param s3KraftSnapshotReadEnabled Whether S3 Kraft snapshot reading is enabled
      * @param s3KraftSnapshotWriteEnabled Whether S3 Kraft snapshot writing is enabled
@@ -102,7 +122,7 @@ public class S3SnapshotConfigFactory {
         boolean s3KraftSnapshotWriteEnabled,
         List<BucketURI> dataBuckets, Map<String, String> objectTaggingMap) {
         return createWithObjectStorage(s3KraftSnapshotReadEnabled, s3KraftSnapshotWriteEnabled,
-            dataBuckets, objectTaggingMap, null);
+            dataBuckets, objectTaggingMap, null, null);
     }
 
     /**
