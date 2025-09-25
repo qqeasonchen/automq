@@ -658,41 +658,6 @@ object KafkaMetadataLog extends Logging {
         }
       }
 
-      // Try to load snapshots from S3 if enabled
-      try {
-        import org.apache.kafka.metadata.SnapshotController
-        import scala.compat.java8.OptionConverters._
-
-        // Check if S3 Kraft snapshot reading is enabled
-        val s3Config = SnapshotController.getS3SnapshotConfig()
-        if (s3Config != null && s3Config.isS3KraftSnapshotReadEnabled()) {
-          info("S3 Kraft snapshot reading is enabled, attempting to load snapshots from S3")
-
-          // Try to load snapshot from S3
-          val s3SnapshotOpt = SnapshotController.loadSnapshotFromS3()
-          s3SnapshotOpt.asScala match {
-            case Some(s3Snapshot) =>
-              info("Successfully loaded snapshot from S3 storage")
-              val snapshotId = s3Snapshot.snapshotId()
-              info(s"S3 snapshot loaded with snapshotId: $snapshotId")
-
-              // Add the S3 snapshot to snapshotsToRetain
-              // We put Some(s3Snapshot) since we have the actual RawSnapshotReader
-              snapshotsToRetain.put(snapshotId, Some(s3Snapshot))
-              info(s"Added S3 snapshot $snapshotId to snapshots to retain")
-
-            case None =>
-              debug("No snapshot found in S3 storage or failed to load")
-          }
-        } else {
-          debug("S3 Kraft snapshot reading is disabled, skipping S3 snapshot recovery")
-        }
-      } catch {
-        case e: Exception =>
-          warn(s"Error while checking S3 snapshot configuration: ${e.getMessage}", e)
-      }
-
-
       // Before deleting any snapshots, we should ensure that the retained snapshots are
       // consistent with the current state of the log. If the log start offset is not 0,
       // then we must have a snapshot which covers the initial state up to the current

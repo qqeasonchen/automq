@@ -61,6 +61,7 @@ public class S3SnapshotConfig {
     private final ObjectStorage objectStorage;
     private final List<DataBucket> dataBuckets;
     private final boolean objectTagging;
+    private final List<String> logDirs;
 
     /**
      * Create a new S3SnapshotConfig instance.
@@ -70,24 +71,27 @@ public class S3SnapshotConfig {
      * @param objectStorage The ObjectStorage instance for S3 operations, can be null if disabled
      * @param dataBuckets List of data buckets for S3 operations
      * @param objectTagging Whether object tagging is enabled
+     * @param logDirs List of log directories from log.dirs configuration
      */
     public S3SnapshotConfig(boolean s3KraftSnapshotReadEnabled, boolean s3KraftSnapshotWriteEnabled, ObjectStorage objectStorage,
-                           List<DataBucket> dataBuckets, boolean objectTagging) {
+                           List<DataBucket> dataBuckets, boolean objectTagging, List<String> logDirs) {
         this.s3KraftSnapshotReadEnabled = s3KraftSnapshotReadEnabled;
         this.s3KraftSnapshotWriteEnabled = s3KraftSnapshotWriteEnabled;
         this.objectStorage = objectStorage;
         this.dataBuckets = dataBuckets;
         this.objectTagging = objectTagging;
+        this.logDirs = logDirs;
     }
 
     /**
      * Create a new S3SnapshotConfig instance with minimal parameters (for backward compatibility).
      *
      * @param s3KraftSnapshotReadEnabled Whether S3 Kraft snapshot reading is enabled
+     * @param s3KraftSnapshotWriteEnabled Whether S3 Kraft snapshot writing is enabled
      * @param objectStorage The ObjectStorage instance for S3 operations, can be null if disabled
      */
     public S3SnapshotConfig(boolean s3KraftSnapshotReadEnabled, boolean s3KraftSnapshotWriteEnabled, ObjectStorage objectStorage) {
-        this(s3KraftSnapshotReadEnabled, s3KraftSnapshotReadEnabled, objectStorage, null, false);
+        this(s3KraftSnapshotReadEnabled, s3KraftSnapshotWriteEnabled, objectStorage, null, false, null);
     }
 
     /**
@@ -131,6 +135,15 @@ public class S3SnapshotConfig {
     }
 
     /**
+     * Get the list of log directories from log.dirs configuration.
+     *
+     * @return List of log directory paths, or null if not configured
+     */
+    public List<String> getLogDirs() {
+        return logDirs;
+    }
+
+    /**
      * Create a disabled S3SnapshotConfig instance.
      *
      * @return S3SnapshotConfig with S3 snapshot reading disabled
@@ -147,6 +160,7 @@ public class S3SnapshotConfig {
             ", objectStorage=" + (objectStorage != null ? "configured" : "null") +
             ", dataBuckets=" + (dataBuckets != null ? dataBuckets.size() + " buckets" : "null") +
             ", objectTagging=" + objectTagging +
+            ", logDirs=" + (logDirs != null ? logDirs.size() + " directories" : "null") +
             '}';
     }
 }

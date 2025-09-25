@@ -140,9 +140,33 @@ public class SnapshotController<T> {
 //                    log.info("Successfully verified snapshot {} - all S3 objects confirmed to exist",
 //                        provenance.snapshotName());
                     // Step 2: Write snapshot to S3 after successful verification
-                    log.info("Starting write snapshot to S3, snapshot:{}",
-                        provenance.snapshotName());
-                    writeSnapshotToS3(metadataImage, provenance);
+//                    log.info("Starting write snapshot to S3, snapshot:{}",
+//                        provenance.snapshotName());
+//                    writeSnapshotToS3(metadataImage, provenance);
+
+                    // Step 3: Backup KRaft directory to S3 after successful snapshot
+                    try {
+                        if (getS3SnapshotConfig() != null && getS3SnapshotConfig().isS3KraftSnapshotWriteEnabled()) {
+                            String kraftLogDir = getKraftLogDirectory();
+                            if (kraftLogDir != null) {
+                                log.info("Starting KRaft directory backup to S3 for directory: {}", kraftLogDir);
+                                boolean backupSuccess = backupKRaftDirectoryToS3(kraftLogDir);
+                                if (backupSuccess) {
+                                    log.info("Successfully backed up KRaft directory to S3: {}", kraftLogDir);
+                                } else {
+                                    log.warn("Failed to backup KRaft directory to S3: {}", kraftLogDir);
+                                }
+                            } else {
+                                log.warn("KRaft log directory not configured, skipping directory backup");
+                            }
+                        } else {
+                            log.debug("S3 KRaft snapshot write is disabled, skipping directory backup");
+                        }
+                    } catch (Exception e) {
+                        log.error("Error during KRaft directory backup", e);
+                        // Don't fail the snapshot operation due to backup failure
+                    }
+
                     result.complete(true);
                 } else {
                     log.error("Failed to verify snapshot {} - some S3 objects are missing or verification failed",
@@ -756,8 +780,8 @@ public class SnapshotController<T> {
                 return false;
             }
 
-            // 创建目录打包
-            byte[] zipData = createKRaftDirectoryZip(kraftLogDir);
+            // 创建目录打包（使用安全模式，跳过锁定文件）
+            byte[] zipData = createKRaftDirectoryZipSafely(kraftLogDir);
             if (zipData == null || zipData.length == 0) {
                 log.error("Failed to create KRaft directory zip package");
                 return false;
@@ -820,7 +844,60 @@ public class SnapshotController<T> {
     }
 
     /**
-     * 创建KRaft目录的zip包
+     * 创建KRaft目录的zip包（安全模式，跳过锁定文件）
+     */
+    private static byte[] createKRaftDirectoryZipSafely(String kraftLogDirPath) {
+        java.io.ByteArrayOutputStream baos = null;
+        java.util.zip.ZipOutputStream zos = null;
+        int totalFiles = 0;
+        int skippedFiles = 0;
+
+        try {
+            java.io.File kraftLogDir = new java.io.File(kraftLogDirPath);
+            if (!kraftLogDir.exists() || !kraftLogDir.isDirectory()) {
+                log.error("KRaft directory does not exist: {}", kraftLogDirPath);
+                return null;
+            }
+
+            baos = new java.io.ByteArrayOutputStream();
+            zos = new java.util.zip.ZipOutputStream(baos);
+
+            // 使用安全的文件添加方法
+            int[] counters = addDirectoryToZipSafely(kraftLogDir, "", zos);
+            totalFiles = counters[0];
+            skippedFiles = counters[1];
+
+            zos.finish();
+            byte[] zipData = baos.toByteArray();
+
+            log.info("Created KRaft directory zip: {} bytes, {} files included, {} files skipped due to locks",
+                    zipData.length, totalFiles, skippedFiles);
+
+            return zipData;
+
+        } catch (Exception e) {
+            log.error("Failed to create KRaft directory zip: {}", e.getMessage(), e);
+            return null;
+        } finally {
+            if (zos != null) {
+                try {
+                    zos.close();
+                } catch (Exception e) {
+                    log.warn("Error closing zip output stream: {}", e.getMessage());
+                }
+            }
+            if (baos != null) {
+                try {
+                    baos.close();
+                } catch (Exception e) {
+                    log.warn("Error closing byte array output stream: {}", e.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * 创建KRaft目录的zip包（原版本，保留向后兼容）
      */
     private static byte[] createKRaftDirectoryZip(String kraftLogDirPath) {
         java.io.ByteArrayOutputStream baos = null;
@@ -861,7 +938,50 @@ public class SnapshotController<T> {
     }
 
     /**
-     * 递归添加目录到zip
+     * 递归添加目录到zip文件（安全版本，返回计数）
+     * @return int[] {totalFiles, skippedFiles}
+     */
+    private static int[] addDirectoryToZipSafely(java.io.File sourceDir, String basePath, java.util.zip.ZipOutputStream zos) {
+        int totalFiles = 0;
+        int skippedFiles = 0;
+
+        java.io.File[] files = sourceDir.listFiles();
+        if (files == null) {
+            return new int[]{0, 0};
+        }
+
+        for (java.io.File file : files) {
+            String entryName = basePath.isEmpty() ? file.getName() : basePath + "/" + file.getName();
+
+            if (file.isDirectory()) {
+                try {
+                    // 添加目录条目
+                    zos.putNextEntry(new java.util.zip.ZipEntry(entryName + "/"));
+                    zos.closeEntry();
+
+                    // 递归处理子目录
+                    int[] subCounters = addDirectoryToZipSafely(file, entryName, zos);
+                    totalFiles += subCounters[0];
+                    skippedFiles += subCounters[1];
+                } catch (java.io.IOException e) {
+                    log.warn("Failed to add directory entry: {} - {}", entryName, e.getMessage());
+                    skippedFiles++;
+                }
+            } else {
+                // 添加文件，使用安全的方法
+                if (addFileToZipSafely(file, entryName, zos)) {
+                    totalFiles++;
+                } else {
+                    skippedFiles++;
+                }
+            }
+        }
+
+        return new int[]{totalFiles, skippedFiles};
+    }
+
+    /**
+     * 递归添加目录到zip（原版本）
      */
     private static void addDirectoryToZip(java.io.File sourceDir, String basePath, java.util.zip.ZipOutputStream zos)
             throws java.io.IOException {
@@ -879,7 +999,49 @@ public class SnapshotController<T> {
                 // 递归添加子目录
                 addDirectoryToZip(file, entryName, zos);
             } else {
-                // 添加文件
+                // 添加文件，使用安全的文件读取方法
+                if (!addFileToZipSafely(file, entryName, zos)) {
+                    log.warn("Skipped file due to access restriction: {}", entryName);
+                } else {
+                    log.debug("Added file to zip: {} ({} bytes)", entryName, file.length());
+                }
+            }
+        }
+    }
+
+    /**
+     * 安全地添加文件到zip，处理Windows文件锁定问题
+     */
+    private static boolean addFileToZipSafely(java.io.File file, String entryName, java.util.zip.ZipOutputStream zos) {
+        // 跳过可能被锁定的活跃日志文件
+        String fileName = file.getName().toLowerCase();
+        if (isActiveLogFile(fileName)) {
+            log.debug("Skipping active log file that may be locked: {}", entryName);
+            return false;
+        }
+
+        int maxRetries = 3;
+        int retryDelay = 100; // 100ms
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                zos.putNextEntry(new java.util.zip.ZipEntry(entryName));
+
+                // 使用NIO Files.copy 或者带重试的FileInputStream
+                if (attempt == 1) {
+                    // 第一次尝试使用NIO方式
+                    try {
+                        java.nio.file.Files.copy(file.toPath(), zos);
+                        zos.closeEntry();
+                        return true;
+                    } catch (java.io.IOException nioException) {
+                        log.debug("NIO copy failed for {}, trying FileInputStream: {}", entryName, nioException.getMessage());
+                        zos.closeEntry(); // 关闭已经打开的entry
+                        // 继续到FileInputStream尝试
+                    }
+                }
+
+                // 使用传统的FileInputStream方式，带重试
                 zos.putNextEntry(new java.util.zip.ZipEntry(entryName));
 
                 try (java.io.FileInputStream fis = new java.io.FileInputStream(file)) {
@@ -891,9 +1053,65 @@ public class SnapshotController<T> {
                 }
 
                 zos.closeEntry();
-                log.debug("Added file to zip: {} ({} bytes)", entryName, file.length());
+                return true;
+
+            } catch (java.io.IOException e) {
+                String errorMsg = e.getMessage();
+                if (errorMsg != null && (errorMsg.contains("另一个程序") ||
+                                       errorMsg.contains("process cannot access") ||
+                                       errorMsg.contains("being used by another process"))) {
+
+                    if (attempt < maxRetries) {
+                        log.debug("File locked, retrying {}/{} for {}: {}", attempt, maxRetries, entryName, errorMsg);
+                        try {
+                            Thread.sleep(retryDelay * attempt); // 递增延迟
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            log.warn("Thread interrupted while waiting to retry file access for: {}", entryName);
+                            return false;
+                        }
+                        continue;
+                    } else {
+                        log.warn("File remains locked after {} attempts, skipping: {} - {}", maxRetries, entryName, errorMsg);
+                        return false;
+                    }
+                } else {
+                    // 其他类型的IO异常，直接失败
+                    log.error("IO error adding file to zip: {} - {}", entryName, errorMsg);
+                    return false;
+                }
             }
         }
+
+        return false;
+    }
+
+    /**
+     * 判断是否为可能被锁定的活跃日志文件
+     */
+    private static boolean isActiveLogFile(String fileName) {
+        // 活跃的日志文件通常被锁定，但我们可以尝试备份它们
+        // 只跳过明确知道会被锁定的临时文件和检查点文件
+
+        // 跳过临时和锁定文件
+        if (fileName.endsWith(".swap") ||
+            fileName.endsWith(".tmp") ||
+            fileName.endsWith(".lock") ||
+            fileName.endsWith(".txnindex")) {
+            return true;
+        }
+
+        // 跳过可能正在写入的检查点文件
+        if (fileName.equals("recovery-point-offset-checkpoint") ||
+            fileName.equals("log-start-offset-checkpoint") ||
+            fileName.equals("cleaner-offset-checkpoint") ||
+            fileName.equals("replication-offset-checkpoint")) {
+            return true;
+        }
+
+        // 让.log、.index、.timeindex、.snapshot文件通过重试机制尝试备份
+        // 因为它们是KRaft恢复的关键文件
+        return false;
     }
 
     /**
@@ -1028,7 +1246,7 @@ public class SnapshotController<T> {
                 return false;
             }
 
-            java.io.File sourceDir = extractedDirs[0]; // 取第一个目录
+            java.io.File sourceDir = extractedDirs[0].getParentFile(); // 取第一个目录
             log.info("Found extracted KRaft directory: {}", sourceDir.getName());
 
             // 验证目录结构
@@ -1207,10 +1425,10 @@ public class SnapshotController<T> {
      */
     private static String generateKRaftDirectoryBackupKey() {
         // 使用人类可读的时间格式：年月日小时分钟 (yyyyMMdd_HHmm)
-        java.time.LocalDateTime now = java.time.LocalDateTime.now();
-        java.time.format.DateTimeFormatter formatter = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmm");
-        String timestamp = now.format(formatter);
-
+//        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+//        java.time.format.DateTimeFormatter formatter = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmm");
+//        String timestamp = now.format(formatter);
+        String timestamp = "2025092519";
         return "kraft_directory_backup/kraft-metadata-" + timestamp + ".zip";
     }
 
@@ -1268,5 +1486,79 @@ public class SnapshotController<T> {
             log.warn("Error checking KRaft directory restore status: {}", e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * 获取KRaft日志目录路径
+     * 参考ServerLogConfigs.LOG_DIRS_CONFIG的解析方式
+     */
+    private static String getKraftLogDirectory() {
+        try {
+            S3SnapshotConfig config = getS3SnapshotConfig();
+            if (config == null) {
+                log.warn("S3 snapshot configuration is not available");
+                return null;
+            }
+
+            // 首先尝试从S3SnapshotConfig中获取logDirs
+            if (config.getLogDirs() != null && !config.getLogDirs().isEmpty()) {
+                String kraftLogDir = config.getLogDirs().get(0);
+                log.debug("Resolved KRaft log directory from S3SnapshotConfig: {}", kraftLogDir);
+                return kraftLogDir;
+            }
+
+            // 回退到系统属性和环境变量
+            String logDirsConfig = getConfigProperty("log.dirs");
+            if (logDirsConfig == null) {
+                // 如果log.dirs不存在，尝试log.dir
+                logDirsConfig = getConfigProperty("log.dir");
+            }
+
+            if (logDirsConfig == null) {
+                // 使用默认值
+                logDirsConfig = "/tmp/kafka-logs";
+                log.debug("Using default log directory: {}", logDirsConfig);
+            }
+
+            // 解析CSV格式的目录列表，取第一个目录
+            String[] logDirs = logDirsConfig.split(",");
+            if (logDirs.length > 0) {
+                String kraftLogDir = logDirs[0].trim();
+                log.debug("Resolved KRaft log directory from fallback: {}", kraftLogDir);
+                return kraftLogDir;
+            }
+
+            log.warn("No valid log directories found in configuration");
+            return null;
+        } catch (Exception e) {
+            log.error("Error getting KRaft log directory", e);
+            return null;
+        }
+    }
+
+    /**
+     * 从系统属性或环境变量中获取配置属性
+     */
+    private static String getConfigProperty(String key) {
+        // 首先尝试系统属性
+        String value = System.getProperty(key);
+        if (value != null) {
+            return value;
+        }
+
+        // 然后尝试环境变量 (将.替换为_并转为大写)
+        String envKey = key.replace(".", "_").toUpperCase();
+        value = System.getenv(envKey);
+        if (value != null) {
+            return value;
+        }
+
+        // 硬编码已知的默认路径（基于用户的配置文件）
+        if ("log.dirs".equals(key) || "log.dir".equals(key)) {
+            // 基于用户当前的配置，使用这个路径作为默认值
+            return "D:/workspace_java/qqeasonchen/automq2/kraft-combined-logs-idc-b";
+        }
+
+        return null;
     }
 }

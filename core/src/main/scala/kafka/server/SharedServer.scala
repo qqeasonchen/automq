@@ -303,12 +303,60 @@ class SharedServer(
             autoMQConfig.s3KraftSnapshotReadEnabled(),
             autoMQConfig.s3KraftSnapshotWriteEnabled(),
             autoMQConfig.dataBuckets(),
-            s3Config.objectTagging()
+            s3Config.objectTagging(),
+            sharedServerConfig.logDirs.asJava
           )
         } else {
           S3SnapshotConfigFactory.createDisabled()
         }
         SnapshotController.setS3SnapshotConfig(s3SnapshotConfig)
+
+        // KRaft目录恢复逻辑：在启动前检查并恢复KRaft元数据
+        if (autoMQConfig.s3KraftSnapshotReadEnabled()) {
+          try {
+            // 获取第一个log.dirs目录作为KRaft目录
+            val kraftLogDir = sharedServerConfig.logDirs.headOption
+            kraftLogDir match {
+              case Some(logDir) =>
+                info(s"Checking if KRaft directory needs restoration from S3: $logDir")
+
+                // 检查是否需要从S3恢复
+                val shouldRestore = SnapshotController.shouldRestoreKRaftDirectoryFromS3(logDir)
+
+                if (shouldRestore) {
+                  info(s"KRaft directory is incomplete or missing, attempting restoration from S3: $logDir")
+
+                  // 执行KRaft目录恢复
+                  val restoreSuccess = SnapshotController.restoreKRaftDirectoryFromS3(logDir)
+
+                  if (restoreSuccess) {
+                    info(s"Successfully restored KRaft directory from S3: $logDir")
+                  } else {
+                    // 恢复失败的处理策略
+                    val errorMsg = s"Failed to restore KRaft directory from S3: $logDir"
+                    error(errorMsg)
+
+                    // 可以选择抛出异常中断启动，或者继续启动（让Kafka尝试初始化新的KRaft状态）
+                    // throw new RuntimeException(errorMsg)
+                    warn("Continuing broker startup despite KRaft directory restore failure - Kafka will attempt to initialize new KRaft state")
+                  }
+                } else {
+                  info(s"KRaft directory is complete, no restoration needed: $logDir")
+                }
+
+              case None =>
+                warn("No log directories configured, skipping KRaft directory restoration")
+            }
+          } catch {
+            case e: Exception =>
+              error(s"Error during KRaft directory restoration check: ${e.getMessage}", e)
+              // 继续启动，不因为恢复检查失败而中断broker启动
+              warn("Continuing broker startup despite KRaft directory restoration error")
+          }
+        } else {
+          debug("S3 KRaft snapshot reading is disabled, skipping directory restoration")
+        }
+
         // AutoMQ inject end
 
         val _raftManager = new KafkaRaftManager[ApiMessageAndVersion](
