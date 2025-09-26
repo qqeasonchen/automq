@@ -816,7 +816,9 @@ public class SnapshotController<T> {
             log.info("Downloaded KRaft directory backup from S3: {} bytes", zipData.length);
 
             // 恢复目录
-            return restoreKRaftDirectoryFromZip(kraftLogDir, zipData);
+            boolean restoreResult = restoreKRaftDirectoryFromZip(kraftLogDir, zipData);
+            log.info("KRaft directory restored successfully");
+            return restoreResult;
 
         } catch (Exception e) {
             log.error("Error during KRaft directory restore from S3: {}", e.getMessage(), e);
@@ -1418,7 +1420,6 @@ public class SnapshotController<T> {
 //        String timestamp = "2025092519";
         return "kraft_directory_backup/kraft-metadata-" + timestamp + ".zip";
     }
-
 
 
     /**
