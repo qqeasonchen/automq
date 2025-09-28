@@ -1207,33 +1207,31 @@ public class SnapshotController<T> {
      * 从zip数据恢复KRaft目录
      */
     private static boolean restoreKRaftDirectoryFromZip(String kraftLogDirPath, byte[] zipData) {
-        java.io.File tempDir = null;
+        java.io.File kraftRestoreDir = null;
 
         try {
             log.info("Restoring KRaft directory from zip data: {} bytes to {}", zipData.length, kraftLogDirPath);
 
-            // 创建临时目录
-            tempDir = java.nio.file.Files.createTempDirectory("kraft-restore").toFile();
-            log.debug("Created temporary directory for restoration: {}", tempDir.getAbsolutePath());
+            // 创建临时目录，与kraftLogDirPath同级别
+            java.io.File kraftLogDir = new java.io.File(kraftLogDirPath);
+            java.io.File parentDir = kraftLogDir.getParentFile();
+            if (parentDir == null) {
+                parentDir = new java.io.File(".");
+            }
+            kraftRestoreDir = new java.io.File(parentDir, "kraft-restore");
+            if (!kraftRestoreDir.exists()) {
+                kraftRestoreDir.mkdirs();
+            }
+            log.info("Created temporary directory for restoration: {}", kraftRestoreDir.getAbsolutePath());
 
             // 解压zip到临时目录
-            if (!extractZipToDirectory(zipData, tempDir)) {
-                log.error("Failed to extract KRaft backup zip to temporary directory");
+            if (!extractZipToDirectory(zipData, kraftRestoreDir)) {
+                log.error("Failed to extract KRaft backup zip to kraft restore directory");
                 return false;
             }
-
-            // 验证解压后的内容
-            java.io.File[] extractedDirs = tempDir.listFiles(java.io.File::isDirectory);
-            if (extractedDirs == null || extractedDirs.length == 0) {
-                log.error("No directories found in extracted KRaft backup");
-                return false;
-            }
-
-            java.io.File sourceDir = extractedDirs[0].getParentFile(); // 取第一个目录
-            log.info("Found extracted KRaft directory: {}", sourceDir.getName());
 
             // 验证目录结构
-            if (!validateKRaftDirectory(sourceDir)) {
+            if (!validateKRaftDirectory(kraftRestoreDir)) {
                 log.error("KRaft directory validation failed");
                 return false;
             }
@@ -1242,7 +1240,7 @@ public class SnapshotController<T> {
             java.io.File targetDir = new java.io.File(kraftLogDirPath);
             if (targetDir.exists()) {
                 log.info("Cleaning existing KRaft directory: {}", kraftLogDirPath);
-                if (!deleteDirectoryRecursively(targetDir)) {
+                if (!deleteDirectoryRecursively(targetDir, true)) {
                     log.error("Failed to clean existing KRaft directory");
                     return false;
                 }
@@ -1252,7 +1250,7 @@ public class SnapshotController<T> {
             targetDir.getParentFile().mkdirs();
 
             // 复制解压后的目录到目标位置
-            if (!copyDirectoryRecursively(sourceDir, targetDir)) {
+            if (!copyDirectoryRecursively(kraftRestoreDir, targetDir)) {
                 log.error("Failed to copy restored KRaft directory");
                 return false;
             }
@@ -1265,10 +1263,10 @@ public class SnapshotController<T> {
             return false;
         } finally {
             // 清理临时目录
-            if (tempDir != null && tempDir.exists()) {
+            if (kraftRestoreDir != null && kraftRestoreDir.exists()) {
                 try {
-                    deleteDirectoryRecursively(tempDir);
-                    log.debug("Cleaned up temporary directory: {}", tempDir.getAbsolutePath());
+                    deleteDirectoryRecursively(kraftRestoreDir);
+                    log.debug("Cleaned up temporary directory: {}", kraftRestoreDir.getAbsolutePath());
                 } catch (Exception e) {
                     log.warn("Failed to clean temporary directory: {}", e.getMessage());
                 }
@@ -1382,19 +1380,36 @@ public class SnapshotController<T> {
      * 递归删除目录
      */
     private static boolean deleteDirectoryRecursively(java.io.File dir) {
+        return deleteDirectoryRecursively(dir, false);
+    }
+
+    /**
+     * 递归删除目录，支持保留根目录选项
+     * @param dir 要删除的目录
+     * @param keepRootDir 是否保留根目录本身（只删除其内容）
+     * @return 删除操作是否成功
+     */
+    private static boolean deleteDirectoryRecursively(java.io.File dir, boolean keepRootDir) {
         try {
             if (dir.exists()) {
                 if (dir.isDirectory()) {
                     java.io.File[] files = dir.listFiles();
                     if (files != null) {
                         for (java.io.File file : files) {
-                            if (!deleteDirectoryRecursively(file)) {
+                            if (!deleteDirectoryRecursively(file, false)) {
                                 return false;
                             }
                         }
                     }
                 }
-                return dir.delete();
+
+                // 如果keepRootDir为true且这是根目录，则不删除该目录本身
+                if (keepRootDir) {
+                    log.debug("Keeping root directory: {}", dir.getAbsolutePath());
+                    return true;
+                } else {
+                    return dir.delete();
+                }
             }
             return true;
         } catch (Exception e) {
